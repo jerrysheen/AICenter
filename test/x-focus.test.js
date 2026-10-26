@@ -8,7 +8,10 @@ import { randomUUID } from 'node:crypto';
 import { createStore } from '../packages/database/src/index.js';
 import { runMigrations } from '../packages/database/src/migrations.js';
 import { createReportRepository } from '../packages/database/src/repositories/report-repository.js';
-import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, buildDriftFromSnapshot, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, notInterestedLimits, xFocusInstruction, looksLikeOfficialBrandAccount, storedFocus } from '../packages/domain/src/x-focus.js';
+import { loadXFocusConfig, composeFocus, keywordFocus, rankAutoLikeCandidates, buildDrift, buildDriftFromSnapshot, nextAutoLikeSettings, shanghaiDayStart, autoLikeLimits, notInterestedLimits, xFocusInstruction, looksLikeOfficialBrandAccount, storedFocus, hasPersistedModelFocus } from '../packages/domain/src/x-focus.js';
+import { createFeedService } from '../packages/domain/src/feed-service.js';
+import { createFeedValueReviewService } from '../packages/domain/src/feed-value-review-service.js';
+import { normalizeFeedValueText } from '../packages/domain/src/feed-value.js';
 import { looksLikeFeedAd } from '../packages/domain/src/feed-ad.js';
 import { createXFocusScorer, X_FOCUS_SCORE_RESERVE_MS } from '../packages/domain/src/x-focus-score.js';
 import { createXFocusService, KEYWORD_RESCORE_LIMIT, FOCUS_POINT_LIMIT } from '../packages/domain/src/x-auto-like.js';
@@ -127,12 +130,18 @@ test('x-focus config keeps seven directions and the highest oil weight', () => {
   assert.equal(overridden.dailyLimit, 3);
   assert.equal(overridden.hourlyLimit, 1);
   assert.equal(overridden.minIntervalMs, 60_000);
+  assert.equal(config.autoLike.minScore, 0.8);
   assert.equal(autoLikeLimits(config, { AI_CENTER_JEV_ENABLED: 'false' }).minScore, 0.9);
   assert.equal(autoLikeLimits(config, {
     AI_CENTER_JEV_ENABLED: 'false',
     AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
   }).minScore, 0.8);
-  assert.equal(autoLikeLimits(config, {}).minScore, 0.75);
+  const lowered = { ...config, autoLike: { ...config.autoLike, minScore: 0.7 } };
+  assert.equal(autoLikeLimits(lowered, {
+    AI_CENTER_JEV_ENABLED: 'false',
+    AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
+  }).minScore, 0.7);
+  assert.equal(autoLikeLimits(config, {}).minScore, 0.8);
   assert.match(xFocusInstruction(config), /孙宇晨/);
   assert.match(xFocusInstruction(config), /promotional/);
   assert.match(xFocusInstruction(config), /体育竞猜/);
@@ -1474,5 +1483,259 @@ test('a broken x-focus config does not stop the web server', async () => {
   } finally {
     await app.close();
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function scoredFeedPort(items) {
+  return {
+    findByProvider(providerId) {
+      return providerId === 'x' ? { id: 'content.x.home' } : null;
+    },
+    persistence() {
+      return {
+        providerId: 'x',
+        sourceAccount: {
+          externalId: 'x:home:for-you',
+          displayName: 'X',
+          profileUrl: 'https://x.com/home',
+          authMode: 'browser-session',
+        },
+      };
+    },
+    async read() {
+      return { data: { feed: 'for-you', mode: 'live', loggedIn: true, note: 'live', fetchedAt: Date.now(), items } };
+    },
+  };
+}
+
+function likeRuntime(calls) {
+  return {
+    listJobsByType: (type) => calls.filter((job) => job.type === type),
+    listOpenJobs: (type) => calls.filter((job) => job.type === type && job.status === 'queued'),
+  };
+}
+
+test('a model score written during ingest dispatches before the rest of the batch', async () => {
+  const store = createStore(':memory:');
+  try {
+    const calls = [];
+    const order = [];
+    const focus = modelFocus('oil-geopolitics', 0.91);
+    const service = createXFocusService({
+      config,
+      env: { AI_CENTER_X_AUTO_LIKE: '1' },
+      feedRepository: store.repositories.feed,
+      runtimeRepository: likeRuntime(calls),
+      snapshots: {
+        readSnapshot: () => ({ payload: { pageEnabled: true, suspended: false, failureWatchReady: true, notedFailureIds: [] } }),
+        saveSnapshot: () => {},
+      },
+      requestLike: (_workspace, input) => {
+        calls.push({ type: X_LIKE_JOB_TYPE, createdAt: Date.now(), status: 'queued', input });
+      },
+      now: () => Date.now(),
+    });
+    let filters = 0;
+    const items = [1, 2].map((n) => {
+      const text = `${SUBSTANTIAL} 第 ${n} 条单独记录。`;
+      return {
+        externalId: `211110565421160880${n}`,
+        title: `原油 ${n}`,
+        body: text,
+        summary: text,
+        originalText: text,
+        sourceUrl: `https://x.com/alice/status/211110565421160880${n}`,
+        authorName: 'alice',
+        authorHandle: 'alice',
+        publishedAt: NOW,
+        xFocus: focus,
+      };
+    });
+    const feed = createFeedService({
+      legacyRepository: store,
+      feedRepository: store.repositories.feed,
+      sourcePort: scoredFeedPort(items),
+      feedFilter: {
+        async evaluate() {
+          filters += 1;
+          order.push(`filter-${filters}`);
+          return {
+            action: 'keep',
+            createContentItem: true,
+            status: 'ready',
+            metadata: { filterDecision: 'KEEP', filterReason: 'all-three' },
+          };
+        },
+      },
+      onXScoreWritten: async () => {
+        order.push('scored');
+        await service.dispatch('local');
+      },
+      onXIngest: async () => {
+        order.push('ingest');
+        await service.dispatch('local');
+      },
+    });
+    await feed.getExternalFeed('x', { feed: 'for-you', refresh: true });
+    assert.deepEqual(order, ['filter-1', 'scored', 'filter-2', 'scored', 'ingest']);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input.source, 'auto');
+    assert.equal(calls[0].input.tweetId, '2111105654211608801');
+    assert.equal(hasPersistedModelFocus({ xFocus: focus }), true);
+  } finally {
+    store.close();
+  }
+});
+
+test('a closed page switch and a keyword score do not enqueue a like', async () => {
+  const store = createStore(':memory:');
+  try {
+    const calls = [];
+    let scored = 0;
+    const keyword = { ...modelFocus('oil-geopolitics', 0.95), method: 'keyword' };
+    const items = [{
+      externalId: '2111105654211608811',
+      title: '原油',
+      body: SUBSTANTIAL,
+      summary: SUBSTANTIAL,
+      originalText: SUBSTANTIAL,
+      sourceUrl: 'https://x.com/alice/status/2111105654211608811',
+      authorName: 'alice',
+      publishedAt: NOW,
+      xFocus: keyword,
+    }];
+    const service = createXFocusService({
+      config,
+      env: { AI_CENTER_X_AUTO_LIKE: '1' },
+      feedRepository: store.repositories.feed,
+      runtimeRepository: likeRuntime(calls),
+      snapshots: {
+        readSnapshot: () => ({ payload: { pageEnabled: false, suspended: false, failureWatchReady: true, notedFailureIds: [] } }),
+        saveSnapshot: () => {},
+      },
+      requestLike: (_workspace, input) => {
+        calls.push({ type: X_LIKE_JOB_TYPE, createdAt: Date.now(), status: 'queued', input });
+      },
+      now: () => Date.now(),
+    });
+    const feed = createFeedService({
+      legacyRepository: store,
+      feedRepository: store.repositories.feed,
+      sourcePort: scoredFeedPort(items),
+      feedFilter: {
+        async evaluate() {
+          return { action: 'keep', createContentItem: true, status: 'ready', metadata: { filterDecision: 'KEEP', filterReason: 'all-three' } };
+        },
+      },
+      onXScoreWritten: async () => { scored += 1; },
+    });
+    await feed.getExternalFeed('x', { feed: 'for-you', refresh: true });
+    assert.equal(scored, 0);
+    assert.equal(calls.length, 0);
+    assert.equal((await service.dispatch('local')).dispatched, false);
+  } finally {
+    store.close();
+  }
+});
+
+test('writing a keyword score back as a model score dispatches once', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const account = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home:for-you', displayName: '推荐',
+    });
+    const focus = modelFocus('semis', 0.88);
+    const captureRow = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: '2111105654211608822',
+      sourceAccountId: account.id,
+      sourceUrl: 'https://x.com/alice/status/2111105654211608822',
+      title: '芯片', contentHash: 'hash-rescore-like', capturedAt: Date.now(),
+      metadata: {
+        xFocus: { ...focus, method: 'keyword' },
+        originalText: SUBSTANTIAL,
+        filterDecision: 'KEEP',
+        filterReason: 'all-three',
+      },
+    });
+    feed.saveContentItem({
+      workspaceId: 'local', captureId: captureRow.id, originType: 'subscription', contentType: 'post',
+      title: '芯片', body: SUBSTANTIAL, sourceUrl: 'https://x.com/alice/status/2111105654211608822',
+    });
+    const calls = [];
+    const service = createXFocusService({
+      config,
+      env: { AI_CENTER_X_AUTO_LIKE: '1' },
+      feedRepository: feed,
+      runtimeRepository: likeRuntime(calls),
+      snapshots: {
+        readSnapshot: () => ({ payload: { pageEnabled: true, suspended: false, failureWatchReady: true, notedFailureIds: [] } }),
+        saveSnapshot: () => {},
+      },
+      scorer: {
+        scoreCards: async () => ({ byId: { '2111105654211608822': { ...focus, method: 'model' } } }),
+      },
+      requestLike: (_workspace, input) => {
+        calls.push({ type: X_LIKE_JOB_TYPE, createdAt: Date.now(), status: 'queued', input });
+      },
+      now: () => Date.now(),
+    });
+    const rescored = await service.rescoreKeywords('local');
+    assert.equal(rescored.rescored, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input.tweetId, '2111105654211608822');
+    assert.equal((await service.dispatch('local')).reason, 'busy');
+    assert.equal(calls.length, 1);
+  } finally {
+    store.close();
+  }
+});
+
+test('a changed bamboo decision on a model-scored post notifies once', () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const body = '一个普通产品新增了离线导出。';
+    const focus = modelFocus('semis', 0.9);
+    const captureRow = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: '2111105654211608833',
+      sourceUrl: 'https://x.com/alice/status/2111105654211608833',
+      contentHash: 'hash-review-like',
+      metadata: { originalText: body, xFocus: focus },
+    });
+    const item = feed.saveContentItem({
+      workspaceId: 'local', captureId: captureRow.id, originType: 'subscription', contentType: 'post',
+      body, sourceUrl: 'https://x.com/alice/status/2111105654211608833',
+    });
+    const notes = [];
+    const review = createFeedValueReviewService({
+      feedRepository: feed,
+      onXScoreWritten: ({ workspaceId }) => { notes.push(workspaceId); },
+    });
+    const row = {
+      id: `feed:${item.id}`,
+      input: normalizeFeedValueText(body),
+      scores: { reading_value: 0.9, advertising: 0.99, specific_content: 0.1, sufficient_information: 0.2, missing_context: 0.05 },
+      model: 'jev-1.13.0',
+      errorReason: '',
+    };
+    review.apply([row]);
+    assert.deepEqual(notes, ['local']);
+    review.apply([row]);
+    assert.deepEqual(notes, ['local']);
+    const keywordCapture = feed.saveCapture({
+      workspaceId: 'local', provider: 'x', externalId: '2111105654211608844',
+      sourceUrl: 'https://x.com/alice/status/2111105654211608844',
+      contentHash: 'hash-review-keyword',
+      metadata: { originalText: body, xFocus: { ...focus, method: 'keyword' } },
+    });
+    const keywordItem = feed.saveContentItem({
+      workspaceId: 'local', captureId: keywordCapture.id, originType: 'subscription', contentType: 'post',
+      body, sourceUrl: 'https://x.com/alice/status/2111105654211608844',
+    });
+    review.apply([{ ...row, id: `feed:${keywordItem.id}` }]);
+    assert.deepEqual(notes, ['local']);
+  } finally {
+    store.close();
   }
 });

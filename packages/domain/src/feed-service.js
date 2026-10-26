@@ -10,6 +10,7 @@ import { isFlashSource } from './flash-sources.js';
 import { authorCaptureFields } from './authors.js';
 import { resolveBodyCompletion } from './body-completion.js';
 import { xVideoCaptureMetadata } from './x-video-articles.js';
+import { hasPersistedModelFocus } from './x-focus.js';
 
 const DEFAULT_WORKSPACE_ID = 'local';
 const STORED_FEED_LIMIT = 200;
@@ -483,7 +484,7 @@ function feedSourceKey(sourceMeta, replay) {
   return String(replay?.sourceKey || '');
 }
 
-async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources = null, articleDedup = null) {
+async function ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources = null, articleDedup = null, onXScoreWritten = null) {
   if (!feedRepository?.saveCapture || !Array.isArray(snapshot?.items) || !snapshot.items.length) {
     return { added: 0, skipped: 0, addedItemIds: [] };
   }
@@ -680,6 +681,16 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       verdict = { ...verdict, action: 'keep', createContentItem: true, status: 'ready' };
     }
     const authorFields = authorCaptureFields(providerId, item);
+    const metadata = {
+      originalText,
+      ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
+      ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
+      ...(item.xFocus ? { xFocus: item.xFocus } : {}),
+      ...(xVideoCaptureMetadata(item) ? { xVideo: xVideoCaptureMetadata(item) } : {}),
+      ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
+      ...(verdict.metadata || {}),
+      ...(providerId === 'x' && replay.sourceInput?.feed === 'following' ? { homeFeed: 'following' } : {}),
+    };
     const capture = feedRepository.saveCapture({
       workspaceId,
       provider: providerId,
@@ -693,16 +704,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
       publishedAt: item.publishedAt || null,
       capturedAt: Math.max(0, batchCapturedAt - index),
       authorNativeId: authorFields?.authorNativeId || null,
-      metadata: {
-        originalText,
-        ...(item.formatEngine ? { formatEngine: item.formatEngine } : {}),
-        ...(item.authorHandle ? { authorHandle: item.authorHandle } : {}),
-        ...(item.xFocus ? { xFocus: item.xFocus } : {}),
-        ...(xVideoCaptureMetadata(item) ? { xVideo: xVideoCaptureMetadata(item) } : {}),
-        ...(authorFields ? { authorProfile: authorFields.authorProfile } : {}),
-        ...(verdict.metadata || {}),
-        ...(providerId === 'x' && replay.sourceInput?.feed === 'following' ? { homeFeed: 'following' } : {}),
-      },
+      metadata,
     });
     if (!verdict.createContentItem) {
       rememberFingerprint();
@@ -730,6 +732,7 @@ async function ingestExternalItems(feedRepository, workspaceId, persistence, sna
         sourceExternalId: sourceMeta.externalId,
       });
       addedItemIds.push(savedItem.id);
+      if (providerId === 'x' && hasPersistedModelFocus(metadata)) await onXScoreWritten?.(workspaceId);
     }
     rememberFingerprint();
     added += 1;
@@ -1010,13 +1013,17 @@ function wrapFeedProviders(feedProviders) {
   };
 }
 
-export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,onXIngest=null,normalizedArticlePort=null,taggingRepository=null,flashSources=null }) {
+export function createFeedService({ legacyRepository, feedRepository, sourcePort, feedProviders, translationPort, feedFilter = null, mediaPort = null, contentRoutingPort = null,onContentReady=null,onXIngest=null,onXScoreWritten=null,normalizedArticlePort=null,taggingRepository=null,flashSources=null }) {
   const resolvedSourcePort = sourcePort || wrapFeedProviders(feedProviders);
   if (!legacyRepository || !feedRepository || !resolvedSourcePort) throw new Error('feed repositories and source port are required');
   sourcePort = resolvedSourcePort;
   const qualityRule=feedFilter?.config?.mode==='enforce' && feedFilter.config.rule==='all-three-0.60'?'all-three-0.60':'';
   const notifyXIngest = async (workspaceId) => {
     try { await onXIngest?.({ workspaceId }); }
+    catch (error) { console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`); }
+  };
+  const notifyXScoreWritten = async (workspaceId) => {
+    try { await onXScoreWritten?.({ workspaceId }); }
     catch (error) { console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`); }
   };
 
@@ -1139,7 +1146,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       const snapshot = sourceSnapshot.data;
       let stats = { added: 0, skipped: 0 };
       try {
-        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup);
+        stats = contentRoutingPort && providerId==='trendforce' ? await contentRoutingPort.ingest(workspaceId,snapshot) : await ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup, notifyXScoreWritten);
       } catch (error) {
         if(contentRoutingPort && providerId==='trendforce') throw error;
         // Live snapshot still returns even if persistence fails.
@@ -1197,7 +1204,7 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
         throw new Error(snapshot.note || `${sourceId} 抓取失败`);
       }
-      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup));
+      const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup, notifyXScoreWritten));
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});
       if(persistence.providerId==='x') await notifyXIngest(workspaceId);
       return snapshot.deadline ? { ...stats, deadline: true } : stats;

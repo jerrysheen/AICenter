@@ -284,7 +284,7 @@ export function createAiCenterWorker(options = {}) {
     defaultBrowserId: instance.browserId,
   });
   let feedService;
-  const xFocusHooks = { scoreCards: null, afterIngest: null, recordLike: null, recordNotInterested: null };
+  const xFocusHooks = { scoreCards: null, afterIngest: null, onScoreWritten: null, recordLike: null, recordNotInterested: null };
   let xFocusConfig = null;
   try { xFocusConfig = options.xFocusConfig || loadXFocusConfig(instance.configDirectory); }
   catch (error) { console.log(`[worker] x-focus ${String(error?.message || error).slice(0, 160)}`); }
@@ -377,6 +377,7 @@ export function createAiCenterWorker(options = {}) {
     contentRoutingPort,
     onContentReady:env.AI_CENTER_INFORMATION_PIPELINE==='tree-v3' ? ({workspaceId,sourceIds})=>enqueueTreePreparation(store,workspaceId,sourceIds) : null,
     onXIngest: (context) => xFocusHooks.afterIngest?.(context),
+    onXScoreWritten: (context) => xFocusHooks.onScoreWritten?.(context),
     flashSources,
     translationPort: translateService,
   });
@@ -573,6 +574,7 @@ export function createAiCenterWorker(options = {}) {
       await autoLike.dispatch(workspaceId);
       await autoLike.dispatchNotInterested(workspaceId);
     };
+    xFocusHooks.onScoreWritten = ({ workspaceId } = {}) => autoLike.dispatch(workspaceId || 'local');
     xFocusHooks.recordLike = (workspaceId, output) => autoLike.recordAutoLike(workspaceId, output);
     xFocusHooks.recordNotInterested = (workspaceId, output) => autoLike.recordNotInterested(workspaceId, output);
   }
@@ -904,7 +906,8 @@ export function createAiCenterWorker(options = {}) {
       scoreCache:loadFeedValueScoreCache(instance),flashSources,
       jevEnabled:feedFilterConfig.jevEnabled,classificationProvider:feedFilterConfig.classificationProvider,
       bambooRefresh:bambooRefresh.enabled,bambooRefreshMax:bambooRefresh.max,
-      fallback:feedFilterConfig.fallback,xFocusConfig,xFocusMin:feedFilterConfig.xFocusMin}),
+      fallback:feedFilterConfig.fallback,xFocusConfig,xFocusMin:feedFilterConfig.xFocusMin,
+      onXScoreWritten:(context)=>xFocusHooks.onScoreWritten?.(context)}),
     onProgress:progress=>console.log('[feed.quality.refresh]',JSON.stringify(progress)),
   })});
   const handlers = options.handlers || registry.createJobHandlers();

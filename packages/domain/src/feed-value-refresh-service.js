@@ -5,8 +5,23 @@ import {isFlashSource} from './flash-sources.js';
 import {decideFeedAdmissionFallback} from './feed-filter.js';
 import {isJevOutage} from './jev-enabled.js';
 import { bodyCompletionFields } from './body-completion.js';
+import { hasPersistedModelFocus } from './x-focus.js';
 
-function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason, result, runId) {
+function noteXScoreWritten(onXScoreWritten, workspaceId, capture) {
+  if (typeof onXScoreWritten !== 'function' || capture?.provider !== 'x' || !hasPersistedModelFocus(capture.metadata)) return;
+  try {
+    const pending = onXScoreWritten({ workspaceId });
+    if (pending && typeof pending.then === 'function') {
+      pending.catch((error) => {
+        console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`);
+      });
+    }
+  } catch (error) {
+    console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`);
+  }
+}
+
+function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason, result, runId, onXScoreWritten = null) {
   let capture = null;
   if (String(row.id).startsWith('feed:')) {
     const item = feedRepository.getContentItem(workspaceId, row.id.slice(5));
@@ -16,6 +31,7 @@ function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason,
     capture = feedRepository.getCapture(workspaceId, 'media', row.id.slice(6));
   }
   if (!capture) return false;
+  const previousDecision = String(capture.metadata?.filterDecision || '');
   const evaluatedAt = Date.now();
   const metadata = {
     ...capture.metadata,
@@ -43,6 +59,7 @@ function saveFallbackCapture(feedRepository, workspaceId, row, decision, reason,
     status: decision === 'DROP' ? 'ignored' : decision === 'REVIEW' ? 'captured' : 'ready',
     metadata,
   });
+  if (previousDecision !== decision) noteXScoreWritten(onXScoreWritten, workspaceId, capture);
   return true;
 }
 
@@ -57,7 +74,7 @@ export function resolveBambooRefresh(env = process.env, provider = 'typesafe') {
   return { enabled, max };
 }
 
-export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null,jevEnabled=true,classificationProvider='typesafe',fallback=true,xFocusConfig=null,xFocusMin=0.7,bambooRefresh=false,bambooRefreshMax=200}={}) {
+export function createFeedValueRefreshService({feedRepository,mediaRepository,client,model='jev-1.13.0',scoreCache=null,flashSources=null,jevEnabled=true,classificationProvider='typesafe',fallback=true,xFocusConfig=null,xFocusMin=0.7,bambooRefresh=false,bambooRefreshMax=200,onXScoreWritten=null}={}) {
   const bamboo = classificationProvider === 'bamboo';
   const classify = bamboo ? bambooRefresh === true : jevEnabled !== false;
   const refreshCap = Number.isInteger(bambooRefreshMax) && bambooRefreshMax >= 0 ? bambooRefreshMax : 200;
@@ -67,7 +84,7 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
   if(scoreCache?.policyHash===feedValuePolicyHash() && scoreCache.model===model) for(const r of scoreCache.rows || []) {
     if(r.model===model && !r.errorReason && FeedValueScoresSchema.safeParse(r.scores).success) cache.set(evaluator.cacheKey(r.input),r.scores);
   }
-  const review=createFeedValueReviewService({feedRepository,mediaRepository});
+  const review=createFeedValueReviewService({feedRepository,mediaRepository,onXScoreWritten});
   return Object.freeze({async refresh(rawInput={}, {runId='',signal,onProgress=()=>{}}={}) {
     const input=FeedValueRefreshInputSchema.parse(rawInput),{workspaceId}=input;
     const feed=feedRepository.listQualityRefreshItems(workspaceId,input).filter(row=>!isFlashSource({externalId:row.sourceExternalId,displayName:row.sourceName,publisher:row.sourceName}, flashSources)).map(row=>({id:`feed:${row.id}`,provider:row.provider,sourceExternalId:row.sourceExternalId || '',externalId:row.externalId,
@@ -117,7 +134,7 @@ export function createFeedValueRefreshService({feedRepository,mediaRepository,cl
           if(admission.admit || !jevEnabled) {
             const decision=admission.admit?'KEEP':'REVIEW';
             const reason=admission.admit?admission.reason:(jevEnabled?result.errorReason || 'jev-failed':'jev-disabled');
-            const saved=saveFallbackCapture(feedRepository,workspaceId,row,decision,reason,result,runId);
+            const saved=saveFallbackCapture(feedRepository,workspaceId,row,decision,reason,result,runId,onXScoreWritten);
             if(!saved) output.missing++; else output[decision]++;
           } else {
             const applied=review.apply([{...row,...result,scoreOrigin:'current-pool-jev'}],{workspaceId,model,runId});
