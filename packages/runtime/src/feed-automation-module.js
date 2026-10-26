@@ -11,13 +11,20 @@ export const FEED_SUBSCRIPTION_SYNC_SCHEDULE_KEY = 'feed.subscriptions.sync.defa
 const SYNC_LEASE_MS = 10 * 60_000;
 const SYNC_RETRY_MS = 5 * 60_000;
 const SYNC_CLAIM_LIMIT = 50;
-const SOURCE_TIMEOUT_FALLBACK_MS = 90_000;
+const SOURCE_TIMEOUT_FALLBACK_MS = 180_000;
+// Shared by the claim lease and recoverStaleJobs so the job wall clock stays
+// strictly after the per-source AbortController.
+export const FEED_SYNC_RECOVER_BUFFER_MS = 120_000;
 export const FEED_SYNC_MAX_RUNTIME_MS = SYNC_LEASE_MS;
 
 export function feedSyncSourceTimeoutMs(value = process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) {
   const parsed = Number(value);
   const chosen = Number.isFinite(parsed) && parsed > 0 ? parsed : SOURCE_TIMEOUT_FALLBACK_MS;
   return Math.min(3 * 60_000, Math.max(15_000, Math.floor(chosen)));
+}
+
+export function feedSubscriptionSyncMaxRunningMs(value = process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) {
+  return feedSyncSourceTimeoutMs(value) + FEED_SYNC_RECOVER_BUFFER_MS;
 }
 
 export const feedAutomationManifest = Object.freeze({
@@ -118,7 +125,7 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
     };
     const leaseUntil = subscription.leaseUntil;
     if (context?.signal?.aborted) {
-      return finish('interrupted', { reason: 'aborted' });
+      return finish('interrupted', { reason: 'signal' });
     }
     if (metadata.autoRefresh !== true) {
       const linkOnly = metadata.sourceId === 'content.bilibili.import';
@@ -173,15 +180,15 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
         });
       }
       if (context?.signal?.aborted) {
-        return finish('interrupted', { added: Number(stats?.added) || 0, reason: 'aborted' });
+        return finish('interrupted', { added: Number(stats?.added) || 0, reason: 'signal' });
       }
       const added = Number(stats?.added) || 0;
       if (stats?.deadline && added <= 0) {
-        const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
-        return finish(failedRow ? 'failed' : 'stale-lease', {
+        const retryRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+        return finish(retryRow ? 'deadline' : 'stale-lease', {
           added: 0,
           reason: 'deadline',
-          nextSyncAt: failedRow?.nextSyncAt || null,
+          nextSyncAt: retryRow?.nextSyncAt || null,
         });
       }
       const completed = feedRepository.completeSubscriptionSync(subscription.id, Date.now(), leaseUntil);
@@ -190,12 +197,23 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
         nextSyncAt: completed?.nextSyncAt || null,
       });
     } catch (error) {
+      const message = String(error?.message || error).slice(0, 300);
       if (context?.signal?.aborted) {
-        return finish('interrupted', { reason: 'aborted', error: String(error?.message || error).slice(0, 300) });
+        return finish('interrupted', { reason: 'signal', error: message });
+      }
+      const deadlineStop = controller.signal.aborted || error?.deadline === true || error?.code === 'deadline';
+      if (deadlineStop) {
+        const retryRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
+        return finish(retryRow ? 'deadline' : 'stale-lease', {
+          added: 0,
+          reason: 'deadline',
+          error: message,
+          nextSyncAt: retryRow?.nextSyncAt || null,
+        });
       }
       const failedRow = feedRepository.failSubscriptionSync(subscription.id, Date.now(), SYNC_RETRY_MS, leaseUntil);
       return finish(failedRow ? 'failed' : 'stale-lease', {
-        error: String(error?.message || error).slice(0, 300),
+        error: message,
         nextSyncAt: failedRow?.nextSyncAt || null,
       });
     } finally {
@@ -235,7 +253,7 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
     [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: async (rawInput, context) => {
       const input = parseContract(FeedSubscriptionSyncJobInputSchema, rawInput || {});
       const startedAt = Date.now();
-      const leaseMs = timeoutMs() + 30_000;
+      const leaseMs = timeoutMs() + FEED_SYNC_RECOVER_BUFFER_MS;
       const subscription = feedRepository.claimSubscription?.(input.subscriptionId, startedAt, leaseMs) || null;
       if (!subscription) {
         logSync({ source: '-', feed: '-', subscription: input.subscriptionId, status: 'skipped', durationMs: 0, added: 0, reason: 'not-due' });

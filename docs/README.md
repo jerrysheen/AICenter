@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-feed-sync-recover-buffer.md`：X 推荐流单源同步默认 180 秒。`feed.subscription.sync` 的最长运行和领取租约都在这条时限上再加 120 秒，recoverStale 不再先于单源截止把任务记成 WorkerRunTimeout。一条都没写入时记 deadline，任务信号中止记 interrupted。不新增 migration。只需要重启 Worker。临时的 `AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS=180000` 可以留着，也可以删掉。
+
 - `progress/2026-10-26-live-transcribe-pace.md`：Live 转写按大约 1.1 倍实时送帧。每分钟 token 只在额度更紧时再放慢，不再把 500 秒音频在大约 48 秒内送完。`inputTokens` 低于估计一半，或没有用量且长音频每秒不足 3 个字，这一段算 Live 失败。先按实时再试一次，仍失败才走文件转写。`turnComplete` 超时后，只有残缺文本不算成功。切段长度不变。不新增 migration。需要重启 Worker。不重跑 Cranmer。
 
 - `progress/2026-10-26-x-auto-like-score-timing.md`：自动点赞默认分数线改为 0.8，与配置一致，不再只在 Bamboo 下抬到 0.8。企业动态仍至少 0.9；没有分类客户端时其他方向仍至少 0.9。模型分写回内容、关键词分补成模型分，或已有模型分的分类结论发生变化时，立刻选条。整批入库结束后仍会再选一次。同一条已有点赞任务不会重复入队。页面开关关闭时不入队。不新增 migration。需要同时重启 Web 和 Worker。
@@ -205,7 +207,7 @@
 
 - `progress/2026-10-16-polymarket-discovery.md`：Polymarket 白名单标签每小时写入候选表，审核通过后才上页面。GPU 租金按月滚动。比特币月度区间同时保留本月和下一月，当前月结算后自动补再下一月。发布日每分钟只读当天的系列。告警只出现在页面上。migration 74。需要同时重启 Web 和 Worker。
 
-- `progress/2026-10-16-feed-sync-source-progress.md`：订阅同步每分钟只为到期订阅各入队一条 `feed.subscription.sync`。单源默认 90 秒，到时留下已抓到的条目。新的一分钟不取消仍在跑的那一条。迟到的完成不会盖掉更新的租约。雪球不再排在一轮 X 抓取后面被整轮打断。`media.index.enrich` 默认 4 分钟交出剩余 id，最多 10 次。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-16-feed-sync-source-progress.md`：订阅同步每分钟只为到期订阅各入队一条 `feed.subscription.sync`。单源默认 180 秒，最长运行和领取租约再加 120 秒，到时留下已抓到的条目。新的一分钟不取消仍在跑的那一条。迟到的完成不会盖掉更新的租约。雪球不再排在一轮 X 抓取后面被整轮打断。`media.index.enrich` 默认 4 分钟交出剩余 id，最多 10 次。不新增 migration。需要同时重启 Web 和 Worker。2026-10-26 的超时调整只重启 Worker。
 - `progress/2026-10-16-polymarket-watchlist.md`：Polymarket 改为固定观察清单，不再用标题关键词截前 24 条。每 5 分钟按配置里的 slug 批量读 `/events`，事件身份和概率点写入新表。页面改读这份清单，并显示较昨日。`AI_CENTER_POLYMARKET_LEGACY=1` 仍走原来的成交额排序。migration 73。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-15-us-quote-keep-newer.md`：更旧的报价时间不能盖掉较新的价格。缓存从请求开始起最多 45 秒，下一分钟的快照会重新取。新浪期货的 `provider` 写成 `sina`。不新增 migration。需要同时重启 Web 和 Worker。

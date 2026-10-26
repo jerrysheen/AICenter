@@ -6,10 +6,10 @@
 
 `media.index.enrich` 不是雪球停更的直接原因。它和同步共用默认并发 1 的队列，也没有单任务预算，全局大约 45 分钟才记 `WorkerRunTimeout`，正文抓取在任务行失败后仍可能占着浏览器锁。
 
-现在每分钟的 `feed.subscriptions.sync` 只列出到期订阅，并为每条入队 `feed.subscription.sync`。已经排队或正在跑的不再入队。子任务只领取自己这一条，`claimSubscription` 带回 `leaseUntil`。完成、失败和推迟都带 `WHERE next_sync_at = leaseUntil`。旧任务在浏览器锁上等到超时之后再写，不会盖掉新一轮的 `next_sync_at`。父任务信号已经中止时不再回写。默认时限 90 秒，用 `AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS` 调整，范围 15 秒到 3 分钟。到时如果已经有条目，按这条订阅的间隔完成，进度留下；一条都没有则 5 分钟后重试，不推到整个刷新间隔。新的一分钟不取消仍在跑的分发或单源任务，也不释放租约。日志是 `[worker] feed-sync source=… feed=… subscription=… status=… durationMs=… added=…`。X 和雪球在截止后停止继续滚动、长文和评论，返回已经拿到的条目。雪球的打开页面、检查登录、翻页和评论都把本次命令收成 `min(30 秒, 剩余时间)`，剩余不足 1 秒就不再发。BrowserSkill 的 `evaluate` / `fetchJson` 只认 `timeoutMs`，不接受 AbortSignal，进行中的那一次命令会跑到这次传入的时限为止。
+现在每分钟的 `feed.subscriptions.sync` 只列出到期订阅，并为每条入队 `feed.subscription.sync`。已经排队或正在跑的不再入队。子任务只领取自己这一条，`claimSubscription` 带回 `leaseUntil`。完成、失败和推迟都带 `WHERE next_sync_at = leaseUntil`。旧任务在浏览器锁上等到超时之后再写，不会盖掉新一轮的 `next_sync_at`。父任务信号已经中止时不再回写。默认时限 180 秒（2026-10-26 从 90 秒调高），用 `AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS` 调整，范围 15 秒到 3 分钟。领取租约和 Worker 对 `feed.subscription.sync` 的最长运行都是这条时限再加 120 秒（`FEED_SYNC_RECOVER_BUFFER_MS`），recoverStale 不会先于单源 AbortController。到时如果已经有条目，按这条订阅的间隔完成，进度留下，状态是 deadline；一条都没有则状态记为 deadline，5 分钟后重试，不推到整个刷新间隔。任务信号中止记为 interrupted。其它错误仍是 failed。新的一分钟不取消仍在跑的分发或单源任务，也不释放租约。日志是 `[worker] feed-sync source=… feed=… subscription=… status=… durationMs=… added=…`。X 和雪球在截止后停止继续滚动、长文和评论，返回已经拿到的条目。雪球的打开页面、检查登录、翻页和评论都把本次命令收成 `min(30 秒, 剩余时间)`，剩余不足 1 秒就不再发。BrowserSkill 的 `evaluate` / `fetchJson` 只认 `timeoutMs`，不接受 AbortSignal，进行中的那一次命令会跑到这次传入的时限为止。
 
 `media.index.enrich` 的软预算默认 4 分钟（`AI_CENTER_MEDIA_ENRICH_BUDGET_MS`，30 秒到 6 分钟）。到点把剩余 `externalIds` 再入队，跳过这一轮后面的翻译。连续交出最多 10 次（`hop`），第 11 次不再入队。硬上限默认 8 分钟（`AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS`，1 分钟到 30 分钟）。
 
 Worker 启动仍放弃正在跑的两类同步任务并释放租约，因为进程已经不在。排队中的 `feed.subscription.sync` 保留。
 
-不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。
+不新增 migration。不要重建数据库。需要同时重启 Web 和 Worker。2026-10-26 只把默认时限改成 180 秒、缓冲改成 120 秒，并改状态用词，见 `progress/2026-10-26-feed-sync-recover-buffer.md`。那次只重启 Worker。

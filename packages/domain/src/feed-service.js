@@ -1202,7 +1202,12 @@ export function createFeedService({ legacyRepository, feedRepository, sourcePort
       });
       const snapshot = sourceSnapshot?.data || {};
       if (snapshot.mode === 'error' || snapshot.mode === 'unavailable') {
-        throw new Error(snapshot.note || `${sourceId} 抓取失败`);
+        const error = new Error(snapshot.note || `${sourceId} 抓取失败`);
+        if (snapshot.deadline) {
+          error.deadline = true;
+          error.code = 'deadline';
+        }
+        throw error;
       }
       const stats=await (contentRoutingPort && persistence.providerId==='trendforce' ? contentRoutingPort.ingest(workspaceId,snapshot) : ingestExternalItems(feedRepository, workspaceId, persistence, snapshot, feedFilter, flashSources, mediaPort?.articleDedup, notifyXScoreWritten));
       if(stats.addedItemIds?.length)await onContentReady?.({workspaceId,sourceIds:stats.addedItemIds.map(id=>`feed:${id}`)});

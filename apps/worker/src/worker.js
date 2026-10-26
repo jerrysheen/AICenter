@@ -88,7 +88,7 @@ import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
 import { createResearchRecallService } from '../../../packages/domain/src/research-recall-service.js';
-import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTION_SYNC_JOB_TYPE, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, feedAutomationManifest, feedSyncSourceTimeoutMs, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
+import { createFeedAutomationJobHandlers, ensureDefaultContentSubscriptions, ensureFeedSubscriptionSyncSchedule, FEED_SUBSCRIPTION_SYNC_JOB_TYPE, FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE, feedAutomationManifest, feedSubscriptionSyncMaxRunningMs, prepareFeedSyncEnqueue } from '../../../packages/runtime/src/feed-automation-module.js';
 import { createStrategyJobHandlers, ensureDividendStrategySchedule, strategySnapshotManifest } from '../../../packages/runtime/src/strategy-module.js';
 import { createQuantJobHandlers, quantLabManifest } from '../../../packages/runtime/src/quant-module.js';
 import { ensureEtfWhaleSchedule } from '../../../packages/runtime/src/etf-whale-schedule.js';
@@ -230,7 +230,7 @@ export function createAiCenterWorker(options = {}) {
     'report.hourly.extract': boundedInt(env.AI_CENTER_HOURLY_MAX_RUNNING_MS, 45 * 60_000, 60_000, 6 * 60 * 60_000),
     'report.daily.generate': boundedInt(env.AI_CENTER_DAILY_MAX_RUNNING_MS, 90 * 60_000, 60_000, 6 * 60 * 60_000),
     [FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE]: 60_000,
-    [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: feedSyncSourceTimeoutMs(env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS) + 30_000,
+    [FEED_SUBSCRIPTION_SYNC_JOB_TYPE]: feedSubscriptionSyncMaxRunningMs(env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS),
     'media.index.enrich': boundedInt(env.AI_CENTER_MEDIA_ENRICH_MAX_RUNNING_MS, 8 * 60_000, 60_000, 30 * 60_000),
     [YOUTUBE_PODCAST_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
     [YOUTUBE_ARTICLE_JOB_TYPE]: youtubePodcastLimits(env).roundMs,
