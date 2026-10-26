@@ -322,12 +322,18 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.equal(floatBar.className.includes('is-shown'), false);
   assert.equal(textOf(floatBar).includes('打开 YouTube'), false);
   assert.equal(textOf(floatBar).includes('退出'), false);
+  assert.equal(textOf(floatBar).includes('返回播客'), false);
   assert.match(textOf(floatBar), /较早的一集/);
   assert.equal(findAll(floatBar, (node) => node.textContent === '速读版').length, 1);
-  const exitBar = findAll(root, (node) => node.className === 'podcast-reader-exit')[0];
-  const exitButton = findAll(exitBar, (node) => node.textContent === '退出')[0];
+  const exitBar = findAll(root, (node) => node.className === 'reader-mobile-bar is-quad podcast-reader-exit')[0];
+  const exitButton = findAll(exitBar, (node) => node.tagName === 'button')[0];
   assert.equal(exitButton.tagName, 'button');
-  assert.equal(findAll(root, (node) => node.textContent === '退出').length, 1);
+  assert.equal(exitButton.className, 'is-back');
+  assert.match(exitButton.innerHTML, /<svg/);
+  assert.match(exitButton.innerHTML, /<span>返回播客<\/span>/);
+  assert.equal(exitButton.innerHTML.includes('退出'), false);
+  assert.equal(exitBar['aria-label'], '阅读操作');
+  assert.equal(findAll(root, (node) => String(node.innerHTML || '').includes('退出') || node.textContent === '退出').length, 0);
   exitButton.listeners.click();
   assert.equal(exited, 1);
   assert.equal(back, 0);
@@ -366,13 +372,19 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 100, shown: true, narrow: true, revealAfter: 180 }), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 300, shown: false, narrow: false, revealAfter: 180 }), false);
   const css = readFileSync(path.join(publicDir, 'styles.css'), 'utf8');
-  const exitRule = css.match(/\.podcast-reader-exit \{[^}]+\}/)[0];
-  assert.match(exitRule, /position:\s*fixed;/);
-  assert.match(exitRule, /bottom:\s*0;/);
-  assert.match(css, /body\[data-podcast-episode="1"\] \.bottom-tab/);
-  assert.match(css, /body\[data-podcast-episode="1"\] main \{[^}]*padding-bottom:\s*calc\(60px \+ env\(safe-area-inset-bottom\)\)/);
+  const barAt = css.indexOf('.reader-mobile-bar { display: grid;');
+  const blockAt = css.lastIndexOf('@media (max-width: 699px)', barAt);
+  const narrow = css.slice(blockAt, css.indexOf('@media', blockAt + 10));
+  assert.match(narrow, /\.reader-mobile-bar \{[^}]*position:\s*fixed;[^}]*bottom:\s*0;[^}]*border-top:\s*1px solid var\(--comp-tertiary\);[^}]*background:\s*var\(--background-primary\)/);
+  assert.match(narrow, /\.reader-mobile-bar\.is-quad \{ grid-template-columns: repeat\(4, minmax\(0, 1fr\)\); \}/);
+  assert.match(narrow, /\.reader-mobile-bar button \{[^}]*background:\s*transparent;[^}]*color:\s*var\(--brand\);[^}]*min-height:\s*48px;[^}]*font-size:\s*12px/);
+  assert.match(narrow, /\.reader-mobile-bar\.is-quad > \.is-back:only-child \{ grid-column: -2 \/ -1; \}/);
+  assert.match(narrow, /body\[data-podcast-episode="1"\] \.bottom-tab/);
+  assert.match(narrow, /body\[data-podcast-episode="1"\] main \{[^}]*padding-bottom:\s*calc\(80px \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.reader-mobile-bar \{ display: none; \}/);
+  assert.doesNotMatch(css, /\.podcast-reader-exit button \{[^}]*background:\s*var\(--brand\)/);
+  assert.doesNotMatch(css, /\.podcast-reader-exit \{[^}]*left:\s*var\(--side-nav\)/);
   assert.match(css, /@media \(max-width: 720px\) \{[^]*?\.podcast-reader-float \{[^}]*position:\s*fixed;/);
-  assert.match(css, /@media \(min-width: 1200px\) \{\s*\.podcast-reader-exit \{ left: var\(--side-nav\); \}/);
 });
 
 test('podcast exit returns to the list that opened the episode', () => {

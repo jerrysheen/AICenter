@@ -9947,8 +9947,13 @@ function leavePodcastEpisode() {
   setView(action.route, { back: true });
 }
 
+function podcastExitLabel() {
+  const previous = String(history.state?.aiCenterPrevious || state.trail.at(-1) || '');
+  return `返回${routeLabel(podcastExitAction(previous).route)}`;
+}
+
 function showPodcastExit() {
-  mountPodcastReaderExit(() => leavePodcastEpisode(), pageRoot());
+  mountPodcastReaderExit(() => leavePodcastEpisode(), pageRoot(), podcastExitLabel());
 }
 
 function renderPodcastEpisodePage({ refresh = true } = {}) {
@@ -9985,6 +9990,7 @@ function paintPodcastEpisode(root, episode) {
     focused: itemIsFocused(podcastFocusPost(episode)),
     onBack: () => goBack(),
     onExit: () => leavePodcastEpisode(),
+    exitLabel: podcastExitLabel(),
     onMode: (mode) => {
       state.podcastReaderMode = mode === 'speed' ? 'speed' : 'full';
       paintPodcastEpisode(root, state.youtubeEpisodes[episode.videoId] || episode);

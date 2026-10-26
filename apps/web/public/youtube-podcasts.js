@@ -1,3 +1,4 @@
+import { icon } from './icons.js?v=dev';
 import { renderMarkdownInto } from './markdown.js?v=dev';
 import { attachYoutubeHeadingTimes, youtubeWatchUrl } from './youtube-article-links.js?v=dev';
 import { clockLabel, dateKey, monthDayLabel } from './shanghai-time.js?v=dev';
@@ -534,11 +535,13 @@ export function podcastExitAction(from = '') {
   return { route: 'podcasts', historyBack: false };
 }
 
-function podcastExitControl(onExit) {
-  const bar = el('div', 'podcast-reader-exit');
-  const button = el('button', 'podcast-reader-exit-button', '退出');
+function podcastExitControl(onExit, label = '返回播客') {
+  const bar = el('div', 'reader-mobile-bar is-quad podcast-reader-exit');
+  bar.setAttribute('aria-label', '阅读操作');
+  const button = el('button', 'is-back');
   button.type = 'button';
-  button.setAttribute('aria-label', '退出阅读');
+  button.innerHTML = `${icon('chevron-left')}<span>${label}</span>`;
+  button.setAttribute('aria-label', label);
   bar.append(button);
   button.addEventListener('click', () => onExit());
   return bar;
@@ -551,12 +554,12 @@ function removePodcastChrome(selector, keep = null) {
   }
 }
 
-export function mountPodcastReaderExit(onExit = () => {}, root = null) {
+export function mountPodcastReaderExit(onExit = () => {}, root = null, label = '返回播客') {
   if (root && typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
   const body = typeof document !== 'undefined' ? document.body : null;
   if (!body || typeof body.append !== 'function') return null;
   removePodcastChrome('.podcast-reader-exit');
-  const bar = podcastExitControl(onExit);
+  const bar = podcastExitControl(onExit, label);
   body.append(bar);
   return bar;
 }
@@ -648,6 +651,7 @@ export function renderPodcastReader(root, {
   focused = false,
   onBack = () => {},
   onExit = null,
+  exitLabel = '返回播客',
   onMode = () => {},
   onChannel = () => {},
   onStar = () => {},
@@ -697,7 +701,7 @@ export function renderPodcastReader(root, {
   body.dataset.readerPane = reading;
   if (reading === 'speed') fillSpeedRead(body, episode, () => onMode('full'));
   else fillFullArticle(body, episode);
-  const exitBar = podcastExitControl(onExit || onBack);
+  const exitBar = podcastExitControl(onExit || onBack, exitLabel);
   article.append(bar, body, floatBar, exitBar);
   root.append(article);
   bindPodcastChrome(root, floatBar, bar, exitBar);
