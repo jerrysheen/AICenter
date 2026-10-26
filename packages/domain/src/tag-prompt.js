@@ -30,6 +30,23 @@ export function buildTagUserPayload({ catalog, items, selection = 'multi' }) {
   };
 }
 
+export function buildFeedPreprocessSystem() {
+  return `${TAG_SYSTEM_PROMPT}
+
+同时把 original_text 译成简体中文，写入 translated_text。忠实翻译，不要总结、不要扩写、不要加评论。去掉界面残渣和重复空白。保持数字、公司名和专业术语准确。保留原文段落和列表。标签只根据 original_text 原文判断，不要根据译文判断。
+
+一条文本可以命中多个标签。一级标签和二级标签都可以同时命中。`;
+}
+
+export function buildFeedPreprocessPayload({ catalog, itemId, originalText }) {
+  return {
+    selection: 'multi',
+    tag_catalog: catalog,
+    item_id: itemId,
+    original_text: originalText,
+  };
+}
+
 export function buildTagSystemPrompt(selection = 'multi') {
   if (selection === 'single') {
     return `${TAG_SYSTEM_PROMPT}

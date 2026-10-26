@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-feed-preprocess-merged.md`：`AI_CENTER_FEED_PREPROCESS_MERGED` 默认关闭。设为 `1` 后，需要中文译文且不超过一个翻译窗口（默认 1500 字）的新帖，一次 Gemma 26B 同时写入译文和标签。更长的帖、中文短帖和失败的那一条仍走原来的分开路径。不回填旧帖。不新增 migration。默认不设变量就没有行为变化。打开或回退都只需要重启 Worker。
+
 - `progress/2026-10-26-bamboo-daily-unlimited.md`：信息流准入不再默认每天停在 7000。`AI_CENTER_BAMBOO_DAILY_MAX` 未设置、空、`0` 或 `unlimited` 时不封顶；正整数仍按上海日停。计数照旧。供应商 429 和显式正整数下的小时均分仍在。不新增 migration。若 `.env` 写着 7000，删掉或改成 0，然后同时重启 Web 和 Worker。
 
 - `progress/2026-10-26-podcast-toc-chapter-dialogue.md`：单集阅读有至少两个标题时显示目录。宽屏固定在左侧，窄屏用「目录」打开侧栏，不占首屏。底栏去掉旧的 `podcast-reader-exit`。新整理先由 Flash 一次写各章总结，再由 Gemma 26B 按章排对话；旧稿不自动重写。重跑用 `scripts/rerun-youtube-chapter-articles.mjs`。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。

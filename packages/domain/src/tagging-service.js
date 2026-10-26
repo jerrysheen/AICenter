@@ -7,7 +7,8 @@ import {
 } from './feed-ai-batch.js';
 import { loadTagCatalog, projectTagCatalog, selectionModeFor } from './tag-catalog.js';
 import { parseTagBatchOutput } from './tag-parser.js';
-import { TAG_PROMPT_VERSION, buildTagSystemPrompt, buildTagUserPayload } from './tag-prompt.js';
+import { translationLooksTruncated } from './localize-texts.js';
+import { TAG_PROMPT_VERSION, buildFeedPreprocessPayload, buildFeedPreprocessSystem, buildTagSystemPrompt, buildTagUserPayload } from './tag-prompt.js';
 
 function text(value) {
   return String(value || '').trim();
@@ -315,6 +316,77 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
     };
   }
 
+  function parseFeedPreprocessReply(raw, itemId) {
+    const source = String(typeof raw === 'string' ? raw : (raw?.reply_text || ''))
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+    if (!source) return null;
+    let parsed;
+    try { parsed = JSON.parse(source); } catch { return null; }
+    const rows = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.items) ? parsed.items : [parsed]);
+    const row = rows.find((entry) => String(entry?.item_id || entry?.id || '').trim() === itemId) || rows[0];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+    const id = String(row.item_id || row.id || '').trim();
+    if (id && id !== itemId) return null;
+    if (!Array.isArray(row.tags)) return null;
+    return {
+      translatedText: String(row.translated_text || row.zh_body || row.zh || '').trim(),
+      tags: row.tags,
+    };
+  }
+
+  async function preprocessShortItem({
+    workspaceId = 'local',
+    resourceType = 'content-item',
+    item,
+    originalText,
+  } = {}) {
+    if (!taggingPort?.preprocessItem) throw new Error('尚未配置合并预处理');
+    const id = text(item?.id || item?.itemId);
+    const source = text(originalText);
+    if (!id || !source) throw new Error('没有可预处理的原文');
+    const asked = await taggingPort.preprocessItem({
+      systemPrompt: buildFeedPreprocessSystem(),
+      userPayload: buildFeedPreprocessPayload({ catalog: projection, itemId: id, originalText: source }),
+    });
+    const reply = parseFeedPreprocessReply(asked?.reply_text ?? asked, id);
+    if (!reply?.translatedText) throw new Error('合并预处理没有返回译文');
+    if (translationLooksTruncated(source, reply.translatedText.length, reply.translatedText)) {
+      throw new Error('合并预处理译文不完整');
+    }
+    const parsed = parseTagBatchOutput({
+      items: [{ item_id: id, tags: reply.tags }],
+    }, { itemIds: [id], catalogIds: loaded.ids });
+    if (!parsed.ok || parsed.missingItemIds.length) throw new Error('合并预处理没有返回标签');
+    const tags = (parsed.accepted[0]?.tags || []).filter((tagId) => tagId !== 'ai' || tagSupportedByText(
+      loaded.tags.find((tag) => tag.id === 'ai'),
+      source,
+    ));
+    const record = {
+      workspaceId,
+      resourceType,
+      resourceId: id,
+      tags,
+      tagCatalogVersion: loaded.version,
+      promptVersion: TAG_PROMPT_VERSION,
+      model: asked?.model || 'gemma-4-26b-a4b-it',
+      truncatedForModel: false,
+      analyzedAt: now(),
+    };
+    const saved = taggingRepository?.saveTaggings ? taggingRepository.saveTaggings([record]) : [record];
+    return {
+      resourceId: id,
+      sourceText: source,
+      translatedText: reply.translatedText,
+      targetLang: 'zh',
+      engine: String(asked?.model || record.model).slice(0, 32),
+      tags,
+      saved: saved[0] || record,
+    };
+  }
+
   function tagsForText(tagIds, source) {
     const wanted = new Set((tagIds || []).map((id) => text(id)).filter((id) => loaded.ids.has(id)));
     const hits = [];
@@ -414,6 +486,7 @@ export function createTaggingService({ catalog, taggingRepository, taggingPort, 
       return listSaved(workspaceId, resourceType, resourceIds);
     },
     analyzeItems,
+    preprocessShortItem,
     supplementTags,
     pruneUnsupportedTags({
       workspaceId = 'local',

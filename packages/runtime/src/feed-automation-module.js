@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
 import { FeedItemsEnrichJobInputSchema, FeedSubscriptionSyncJobInputSchema, FeedSubscriptionsSyncJobInputSchema, parseContract } from '../../contracts/src/index.js';
+import { translationChunkChars } from '../../connectors/src/translate/index.js';
+import { needsZhLocalization, translationLooksTruncated } from '../../domain/src/localize-texts.js';
 import { defaultAutoRefreshProjections } from '../../source/src/content/definitions.js';
 import {enqueueTreePreparation} from './information-tree-module.js';
 import { TRANSLATION_BACKFILL_PRIORITY, enqueueOriginalTranslations } from './feed-translation-module.js';
@@ -27,6 +30,25 @@ export function feedSubscriptionSyncMaxRunningMs(value = process.env.AI_CENTER_F
   return feedSyncSourceTimeoutMs(value) + FEED_SYNC_RECOVER_BUFFER_MS;
 }
 
+export function feedPreprocessMergedEnabled(env = process.env) {
+  const value = String(env?.AI_CENTER_FEED_PREPROCESS_MERGED ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true';
+}
+
+// Short means the text already fits in one translation chunk (default 1500).
+// Longer items stay on the separate tag call and translation job.
+export function feedPreprocessShortLimit(env = process.env) {
+  return translationChunkChars(env?.AI_CENTER_TRANSLATION_CHUNK_CHARS);
+}
+
+export function feedPreprocessSourceText(item) {
+  return String(item?.body || item?.summary || item?.title || '').trim();
+}
+
+function preprocessSourceHash(value) {
+  return createHash('sha256').update(String(value)).digest('hex');
+}
+
 export const feedAutomationManifest = Object.freeze({
   id: 'feed.automation',
   version: '1.0.0',
@@ -40,7 +62,7 @@ function replayMetadata(account) {
   return metadata;
 }
 
-export function createFeedAutomationJobHandlers({ feedService, feedRepository, taggingService,articleNormalizePort=null,treeEnabled=false, sourceTimeoutMs=null, log=console.log }) {
+export function createFeedAutomationJobHandlers({ feedService, feedRepository, taggingService,articleNormalizePort=null,treeEnabled=false, sourceTimeoutMs=null, env=process.env, log=console.log }) {
   if (!feedService?.refreshPersistedSource || (!articleNormalizePort && !feedService?.localizeContentItems)) {
     throw new Error('feed automation jobs require feedService');
   }
@@ -60,6 +82,51 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
       throw new Error(`还有 ${tagging.missingItemIds.length} 条内容没有完成打标`);
     }
     return tagging;
+  }
+
+  function translationComplete(workspaceId, itemId, source) {
+    const rows = feedRepository?.listTranslations?.(workspaceId, [itemId], 'zh') || [];
+    const row = rows.find((entry) => entry.itemId === itemId);
+    if (!row?.translatedText || row.sourceHash !== preprocessSourceHash(source)) return false;
+    return !translationLooksTruncated(source, String(row.translatedText).length, row.translatedText);
+  }
+
+  function taggingPresent(workspaceId, itemId) {
+    return Boolean(taggingService?.getTagging?.(workspaceId, 'content-item', itemId));
+  }
+
+  async function mergeEligibleShortItems(workspaceId, resourceIds) {
+    const done = new Set();
+    if (!feedPreprocessMergedEnabled(env) || !taggingService?.preprocessShortItem || !resourceIds.length) return done;
+    const limit = feedPreprocessShortLimit(env);
+    const rows = feedService.listTaggableItems?.(workspaceId, { ids: resourceIds, limit: resourceIds.length }) || [];
+    for (const row of rows) {
+      const source = feedPreprocessSourceText(row);
+      if (!source || source.length > limit || !needsZhLocalization(source)) continue;
+      if (translationComplete(workspaceId, row.id, source) || taggingPresent(workspaceId, row.id)) continue;
+      try {
+        const result = await taggingService.preprocessShortItem({
+          workspaceId,
+          item: row,
+          originalText: source,
+        });
+        if (!feedService?.persistItemTranslations) throw new Error('feed enrich 缺少译文保存');
+        feedService.persistItemTranslations([{
+          id: result.resourceId,
+          sourceText: result.sourceText,
+          translatedText: result.translatedText,
+          targetLang: 'zh',
+          engine: result.engine,
+        }], { workspaceId });
+        if (!translationComplete(workspaceId, row.id, source)) throw new Error('合并预处理译文没有写入');
+        done.add(row.id);
+      } catch (error) {
+        const failure = tagFailure(error, 1);
+        const id = String(row.id || '').replace(/[\s=]/g, '').slice(0, 80) || '-';
+        log(`[worker] feed-enrich preprocess failed id=${id} category=${failure.category}`);
+      }
+    }
+    return done;
   }
 
   function tagFailure(error, itemCount) {
@@ -275,8 +342,10 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           skippedTagging: 0,
         };
       }
+      const merged = await mergeEligibleShortItems(input.workspaceId, resourceIds);
       if(articleNormalizePort) {
         const rows = feedService.listTaggableItems?.(input.workspaceId, { ids: resourceIds, limit: resourceIds.length }) || [];
+        const pendingRows = merged.size ? rows.filter((row) => !merged.has(row.id)) : rows;
         // Article normalize writes a tree tagId. It does not write resource_taggings.
         // Short-post tags still go through the Gemma tagging service before the tree job is queued.
         // A tagging failure must not stop the tree job.
@@ -284,9 +353,9 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
         let taggingError = '';
         let taggingFailed = 0;
         try {
-          tagging = await tagContentItems(input.workspaceId, rows);
+          tagging = await tagContentItems(input.workspaceId, pendingRows);
         } catch (error) {
-          const failure = tagFailure(error, rows.length);
+          const failure = tagFailure(error, pendingRows.length);
           taggingError = failure.category;
           taggingFailed = failure.count;
           log(`[worker] feed-enrich tagging failed count=${taggingFailed} category=${taggingError}`);
@@ -300,23 +369,25 @@ export function createFeedAutomationJobHandlers({ feedService, feedRepository, t
           ...(prepared && typeof prepared === 'object' ? prepared : {}),
           workspaceId: input.workspaceId,
           resourceIds,
-          tagged: taggingError ? 0 : (tagging.saved?.length || 0),
+          tagged: taggingError ? merged.size : (tagging.saved?.length || 0) + merged.size,
           skippedTagging: taggingError ? 0 : (tagging.skipped || 0),
           ...(taggingError ? { taggingFailed, taggingError } : {}),
         };
       }
-      const localization = await feedService.localizeContentItems(input.workspaceId, resourceIds);
+      const localizationIds = merged.size ? resourceIds.filter((id) => !merged.has(id)) : resourceIds;
+      const localization = await feedService.localizeContentItems(input.workspaceId, localizationIds);
       const items = feedService.listTaggableItems(input.workspaceId, {
         ids: resourceIds,
         limit: resourceIds.length,
       });
-      const tagging = await tagContentItems(input.workspaceId, items);
+      const pendingItems = merged.size ? items.filter((row) => !merged.has(row.id)) : items;
+      const tagging = await tagContentItems(input.workspaceId, pendingItems);
       if (localization.pendingIds?.length) throw new Error(`还有 ${localization.pendingIds.length} 条内容没有完成翻译；成功标签已保留`);
       return {
         workspaceId: input.workspaceId,
         resourceIds,
-        translated: localization.translated || 0,
-        tagged: tagging.saved?.length || 0,
+        translated: (localization.translated || 0) + merged.size,
+        tagged: (tagging.saved?.length || 0) + merged.size,
         skippedTagging: tagging.skipped || 0,
       };
     },

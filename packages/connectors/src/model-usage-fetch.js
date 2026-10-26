@@ -26,12 +26,13 @@ export function providerTokenUsage(payload, provider) {
 export function createUsageFetch(fetchImpl, { provider, model, observer, stage = 'direct-model' } = {}) {
   return async (url, init) => {
     const inherited = modelUsageContext();
+    const recordedStage = String(init?.usageStage || '').trim() || stage;
     let usedModel = init?.usageModel || model || '';
     try { usedModel = JSON.parse(init?.body || '{}').model || usedModel; } catch {}
     const keySuffix = String(init?.usageKeySuffix || inherited.keySuffix || '').slice(-4);
     const itemId = String(init?.usageItemId || inherited.itemId || '').slice(0, 256);
     const row = { id: randomUUID(), kind: 'request', workspaceId: inherited.workspaceId || 'local',
-      jobId: inherited.jobId || '', jobAttempt: inherited.jobAttempt ?? null, itemId, keySuffix, stage,
+      jobId: inherited.jobId || '', jobAttempt: inherited.jobAttempt ?? null, itemId, keySuffix, stage: recordedStage,
       applicationSessionId: inherited.applicationSessionId || '', harnessSessionId: inherited.harnessSessionId || '',
       turn: inherited.turn ?? null, step: inherited.step ?? null, attempt: null,
       provider, model: usedModel, status: 'pending', completeness: 'missing', usage: emptyTokenUsage(),
