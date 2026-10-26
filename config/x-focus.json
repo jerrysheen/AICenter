@@ -59,7 +59,7 @@
     }
   ],
   "autoLike": {
-    "minScore": 0.75,
+    "minScore": 0.8,
     "dailyLimit": 8,
     "hourlyLimit": 2,
     "minIntervalMs": 900000

@@ -2,11 +2,26 @@ import { createHash } from 'node:crypto';
 import { FeedValueInputSchema,FeedValueScoresSchema } from '../../contracts/src/feed-value.js';
 import { normalizeFeedValueText,decideFeedValue,createFeedValueEvaluator,FEED_VALUE_RULE,feedValueRuleHash,feedValuePolicyHash,FEED_VALUE_VERSION } from './feed-value.js';
 import { bodyCompletionFields } from './body-completion.js';
+import { hasPersistedModelFocus } from './x-focus.js';
 
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 
+function noteXScoreWritten(onXScoreWritten, workspaceId, capture) {
+  if (typeof onXScoreWritten !== 'function' || capture?.provider !== 'x' || !hasPersistedModelFocus(capture.metadata)) return;
+  try {
+    const pending = onXScoreWritten({ workspaceId });
+    if (pending && typeof pending.then === 'function') {
+      pending.catch((error) => {
+        console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`);
+      });
+    }
+  } catch (error) {
+    console.log(`[worker] x-auto-like skipped ${String(error?.message || error).slice(0, 160)}`);
+  }
+}
+
 // Reuse scores only when the saved current input is identical. Repository writes preserve originals and emit outbox events.
-export function createFeedValueReviewService({feedRepository,mediaRepository}={}) {
+export function createFeedValueReviewService({feedRepository,mediaRepository,onXScoreWritten=null}={}) {
   return Object.freeze({apply(rows,{workspaceId='local',model='jev-1.13.0',runId=''}={}) {
     const result={applied:0,changedInput:0,missing:0,invalid:0,KEEP:0,DROP:0,REVIEW:0};
     for(const row of rows) {
@@ -43,6 +58,7 @@ export function createFeedValueReviewService({feedRepository,mediaRepository}={}
       }
       const history=capture.metadata.filterRule ? [...(capture.metadata.filterHistory || []),{
         rule:capture.metadata.filterRule,decision:capture.metadata.filterDecision,at:capture.metadata.filterEvaluatedAt || null}].slice(-5) : [];
+      const previousDecision = String(capture.metadata.filterDecision || '');
       const blocked=decision.decision!=='KEEP';
       const evaluatedAt=Date.now();
       const completion=bodyCompletionFields({...capture.metadata,capturedAt:capture.capturedAt},{truncated:Boolean(decision.bodyPending),now:evaluatedAt});
@@ -54,6 +70,7 @@ export function createFeedValueReviewService({feedRepository,mediaRepository}={}
         ...completion,
         ...(runId?{filterRefreshRunId:runId}:{}),
         filterEvaluatedAt:evaluatedAt,scoreOrigin:changed?'input-changed-needs-rescore':row.scoreOrigin || 'frozen-v3-identical-input',wouldIgnore:blocked}});
+      if (previousDecision !== decision.decision) noteXScoreWritten(onXScoreWritten, workspaceId, capture);
       result.applied++;result[decision.decision]++;
     }
     return result;

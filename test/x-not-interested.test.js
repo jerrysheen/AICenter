@@ -92,7 +92,7 @@ test('all-zero focus leaves the primary direction empty', () => {
   assert.equal(chip.primaryDir, 'semis');
 });
 
-test('bamboo keeps unscored admission and raises the like floor to 0.8', async () => {
+test('bamboo keeps unscored admission and uses the configured like floor', async () => {
   const kept = row('4101', focus('semis', 0.8));
   const missing = row('4101', focus('semis', 0.8));
   delete missing.metadata.filterDecision;

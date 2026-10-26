@@ -89,7 +89,7 @@ export function normalizeXFocusConfig(raw) {
     directions,
     labels: Object.freeze(Object.fromEntries(directions.map((dir) => [dir.id, dir.label]))),
     autoLike: Object.freeze({
-      minScore: clamp01(auto.minScore ?? 0.75) || 0.75,
+      minScore: clamp01(auto.minScore ?? 0.8) || 0.8,
       dailyLimit: limitNumber(auto.dailyLimit, 20, 0, 400),
       hourlyLimit: limitNumber(auto.hourlyLimit, 5, 0, 50),
       minIntervalMs: limitNumber(auto.minIntervalMs, 120_000, 0, 3_600_000),
@@ -253,8 +253,7 @@ export function autoLikeLimits(config, env = process.env) {
   const base = config.autoLike;
   const provider = resolveClassificationProvider(env);
   const classified = resolveJevEnabled(env) || provider === 'bamboo';
-  let minScore = classified ? base.minScore : Math.max(base.minScore, 0.9);
-  if (provider === 'bamboo') minScore = Math.max(minScore, 0.8);
+  const minScore = classified ? base.minScore : Math.max(base.minScore, 0.9);
   return {
     minScore,
     dailyLimit: limitNumber(env?.AI_CENTER_X_AUTO_LIKE_DAILY, base.dailyLimit, 0, 400),
@@ -391,6 +390,11 @@ export function jevKept(metadata) {
   if (metadata?.filterDecision !== 'KEEP') return false;
   const reason = String(metadata.filterReason || '');
   return !reason.startsWith('fallback-') && !reason.startsWith('jev-disabled-');
+}
+
+export function hasPersistedModelFocus(metadata) {
+  const method = metadata?.xFocus?.method;
+  return method === 'model' || method === 'cache';
 }
 
 export function focusAdmissionAllows(metadata, provider = '') {

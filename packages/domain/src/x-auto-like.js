@@ -258,35 +258,37 @@ export function createXFocusService({
     return text(job?.input?.tweetId);
   }
 
+  async function dispatchLike(workspaceId = 'local') {
+    observeAutoLikeFailures(workspaceId);
+    const settings = readSettings(workspaceId);
+    if (!autoLikeEnvEnabled(env) || !settings.pageEnabled || settings.suspended) return { dispatched: false };
+    if (browserBusy()) return { dispatched: false, reason: 'busy' };
+    const at = now();
+    const ranked = rankAutoLikeCandidates(candidates(workspaceId, at), likeJobs(workspaceId, at - 30 * DAY_MS), {
+      ...config,
+      limits: limits(),
+      classificationProvider: provider(),
+    }, at);
+    if (!ranked.picked) return { dispatched: false, reason: ranked.usage.blocked ? 'limit' : 'empty' };
+    const picked = ranked.picked;
+    const input = {
+      contentItemId: picked.contentItemId,
+      source: 'auto',
+      tweetId: picked.tweetId,
+      focusScore: picked.focus.focusScore,
+      primaryDir: picked.focus.primaryDir,
+      directionLabel: config.labels[picked.focus.primaryDir] || '',
+      reason: picked.focus.reason,
+    };
+    requestLike(workspaceId, input);
+    log(`[worker] x-auto-like tweet=${picked.tweetId} score=${picked.focus.focusScore} dir=${picked.focus.primaryDir}`);
+    return { dispatched: true, tweetId: picked.tweetId };
+  }
+
   return Object.freeze({
     limits,
     readSettings,
-    async dispatch(workspaceId = 'local') {
-      observeAutoLikeFailures(workspaceId);
-      const settings = readSettings(workspaceId);
-      if (!autoLikeEnvEnabled(env) || !settings.pageEnabled || settings.suspended) return { dispatched: false };
-      if (browserBusy()) return { dispatched: false, reason: 'busy' };
-      const at = now();
-      const ranked = rankAutoLikeCandidates(candidates(workspaceId, at), likeJobs(workspaceId, at - 30 * DAY_MS), {
-        ...config,
-        limits: limits(),
-        classificationProvider: provider(),
-      }, at);
-      if (!ranked.picked) return { dispatched: false, reason: ranked.usage.blocked ? 'limit' : 'empty' };
-      const picked = ranked.picked;
-      const input = {
-        contentItemId: picked.contentItemId,
-        source: 'auto',
-        tweetId: picked.tweetId,
-        focusScore: picked.focus.focusScore,
-        primaryDir: picked.focus.primaryDir,
-        directionLabel: config.labels[picked.focus.primaryDir] || '',
-        reason: picked.focus.reason,
-      };
-      requestLike(workspaceId, input);
-      log(`[worker] x-auto-like tweet=${picked.tweetId} score=${picked.focus.focusScore} dir=${picked.focus.primaryDir}`);
-      return { dispatched: true, tweetId: picked.tweetId };
-    },
+    dispatch: dispatchLike,
     recordAutoLike(workspaceId, output) {
       const settings = readSettings(workspaceId);
       const jobId = text(output?.jobId);
@@ -411,7 +413,13 @@ export function createXFocusService({
         if (index > 0 && index % 8 === 0) await yieldEventLoop();
         const focus = scored?.byId?.[row.externalId];
         if (!focus || focus.method !== 'model') continue;
-        if (feedRepository?.patchCaptureXFocus?.(workspaceId, row.externalId, focus)) rescored += 1;
+        if (!feedRepository?.patchCaptureXFocus?.(workspaceId, row.externalId, focus)) continue;
+        rescored += 1;
+        try {
+          await dispatchLike(workspaceId);
+        } catch (error) {
+          log(`[worker] x-auto-like skipped ${text(error?.message).slice(0, 160)}`);
+        }
       }
       log(`[worker] x-focus rescore checked=${rows.length} updated=${rescored}`);
       return { rescored };
