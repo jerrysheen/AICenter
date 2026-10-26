@@ -7,10 +7,12 @@ import { createStore } from '../packages/database/src/index.js';
 import { gemmaTranslationInput, createGemmaTranslationRouter } from '../packages/connectors/src/translate/gemma.js';
 import { translationChunkChars } from '../packages/connectors/src/translate/index.js';
 import {
+  EPISODE_STRUCTURE_SYSTEM,
   GEMMA_26B,
   GEMMA_31B,
   GEMMA_OUTPUT_TOKEN_CAP,
   GEMMA_REQUEST_TOKEN_LIMIT,
+  GEMMA_SEGMENT_SYSTEM,
   LEGACY_GEMMA_PART_BOUNDS,
   LONG_VIDEO_GEMMA_SCHEDULE,
   gemmaRequestBudget,
@@ -18,11 +20,14 @@ import {
   longVideoCallBudget,
   longVideoGemmaCalls,
   longVideoPartBounds,
+  mergeParallelArticle,
+  normalizeEpisodeChapters,
+  parallelSegmentConcurrency,
+  parseSegmentTranslation,
+  segmentStructureMaterial,
 } from '../packages/domain/src/gemma-long-video.js';
 import {
-  CHAPTER_SUMMARY_SYSTEM,
   GEMMA_ARTICLE_TITLE_SYSTEM,
-  GEMMA_DIALOGUE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
@@ -195,9 +200,12 @@ test('youtube and x article calls pass the token budget and keep the title on 26
   const gemmaRouter = {
     async generate(input) {
       calls.push(input);
-      if (input.system === GEMMA_TRANSLATE_SYSTEM) return { text: '主持人：利率会差 24%，NVDA 仍在讨论。' };
-      if (input.system === GEMMA_DIALOGUE_SYSTEM) return { text: '## 利率（00:00:03）\n\n**主持人**：利率会差 24%，NVDA 仍在讨论。' };
-      if (input.system === CHAPTER_SUMMARY_SYSTEM) return { text: '[{"oneLiner":"利率会差 24%。","bullets":["NVDA 仍在讨论"]}]' };
+      if (input.system === GEMMA_SEGMENT_SYSTEM) {
+        return { text: JSON.stringify({ zh: '主持人：利率会差 24%，NVDA 仍在讨论。', hint: ['利率会差 24%'], topic: '利率' }) };
+      }
+      if (input.system === EPISODE_STRUCTURE_SYSTEM) {
+        return { text: JSON.stringify({ chapters: [{ title: '利率（00:00:03）', start: '00:00:03', partIds: [0], oneLiner: '利率会差 24%。', bullets: ['NVDA 仍在讨论'] }] }) };
+      }
       if (input.system === GEMMA_ARTICLE_TITLE_SYSTEM) return { text: '利率路径仍在左右仓位' };
       throw new Error('意外的提示');
     },
@@ -239,20 +247,57 @@ test('youtube and x article calls pass the token budget and keep the title on 26
     });
     assert.equal(result.ready, 1);
     assert.deepEqual(calls.map((call) => call.system), [
-      GEMMA_TRANSLATE_SYSTEM,
-      GEMMA_DIALOGUE_SYSTEM,
-      CHAPTER_SUMMARY_SYSTEM,
+      GEMMA_SEGMENT_SYSTEM,
+      EPISODE_STRUCTURE_SYSTEM,
       GEMMA_ARTICLE_TITLE_SYSTEM,
     ]);
-    for (const call of calls.slice(0, 3)) {
-      assert.equal(call.model, undefined);
+    for (const call of calls) assert.equal(call.model, GEMMA_26B);
+    for (const call of calls.slice(0, 2)) {
       assert.equal(call.estimatedTokens, longVideoCallBudget(call.system, call.prompt).total);
       assert.ok(call.estimatedTokens <= GEMMA_REQUEST_TOKEN_LIMIT);
       assert.ok(call.maxOutputTokens <= GEMMA_OUTPUT_TOKEN_CAP);
     }
-    assert.equal(calls[3].model, GEMMA_26B);
     assert.equal(JSON.stringify(calls).includes('fake-key'), false);
   } finally {
     opened.close();
   }
+});
+
+test('parallel segment concurrency stays within the key pool and defaults to 8', () => {
+  assert.equal(parallelSegmentConcurrency(), 8);
+  assert.equal(parallelSegmentConcurrency({ keyCount: 5, perKey: 2 }), 8);
+  assert.equal(parallelSegmentConcurrency({ keyCount: 2, perKey: 2 }), 4);
+  assert.equal(parallelSegmentConcurrency({ keyCount: 1, perKey: 2 }), 2);
+  assert.equal(parallelSegmentConcurrency({ keyCount: 5, perKey: 2, cap: 4 }), 4);
+});
+
+test('structure partIds map back to full translations, not the excerpt', () => {
+  const full = `${'甲'.repeat(2000)}全文结尾`;
+  const parts = [
+    { start: '00:01:00', translation: full, hint: ['甲要点'], topic: '甲段' },
+    { start: '00:20:00', translation: '乙段全文要单独留下。', hint: ['乙要点'], topic: '乙段' },
+  ];
+  const material = segmentStructureMaterial(parts);
+  assert.equal(material[0].excerpt.length, 1800);
+  assert.equal(material[0].excerpt.includes('全文结尾'), false);
+  assert.equal(material[1].i, 1);
+  const parsed = parseSegmentTranslation('```json\n{"zh":"主持人：利率会差 24%，NVDA 仍在讨论。","hint":["利率会差 24%"],"topic":"利率"}\n```');
+  assert.equal(parsed.topic, '利率');
+  assert.deepEqual(parsed.hint, ['利率会差 24%']);
+  const chapters = normalizeEpisodeChapters([
+    { title: '后章', partIds: [1, 1], oneLiner: '先讲乙', bullets: ['乙要点'] },
+    { title: '前章', partIds: [0], oneLiner: '再讲甲', bullets: ['甲要点'] },
+    { title: '空章', partIds: [9], oneLiner: '丢掉', bullets: ['无'] },
+  ], 2);
+  assert.deepEqual(chapters.map((chapter) => chapter.partIds), [[1], [0]]);
+  const merged = mergeParallelArticle(parts, chapters);
+  assert.ok(merged.indexOf('后章') < merged.indexOf('前章'));
+  assert.match(merged, /乙段全文要单独留下/);
+  assert.match(merged, /甲{2000}全文结尾/);
+  assert.match(merged, /### 章节总结/);
+  const orphan = mergeParallelArticle(parts, normalizeEpisodeChapters([
+    { title: '只收到第一段', partIds: [0], oneLiner: '甲', bullets: ['甲要点'] },
+  ], 2));
+  assert.match(orphan, /补充段落/);
+  assert.match(orphan, /乙段全文要单独留下/);
 });

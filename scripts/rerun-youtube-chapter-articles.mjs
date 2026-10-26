@@ -33,7 +33,7 @@ if (isMain(import.meta.url)) {
         console.error(`[youtube-chapter-rerun] 没有已整理的单集 ${videoId}`);
         process.exitCode = 1;
       }
-      console.log('[youtube-chapter-rerun] 不会在这条命令里调用模型。排队后由现有 youtube.podcasts.article 按每天名额重跑。需要重启 Worker。');
+      console.log('[youtube-chapter-rerun] 不会在这条命令里调用模型。排队后由现有 youtube.podcasts.article 按每天名额重跑，走并行分段。需要重启 Worker。');
     } finally {
       store.close();
     }
