@@ -625,17 +625,48 @@ export function homeRequestPlan(nowMs = Date.now()) {
   };
 }
 
-export function hourlyEditions(tree) {
-  const editions = [];
+function readingHourRows(readings) {
+  if (!readings) return [];
+  if (readings instanceof Map) return [...readings.values()];
+  if (Array.isArray(readings)) return readings;
+  if (typeof readings === 'object') return Object.values(readings);
+  return [];
+}
+
+// Tree hours stay first. A reading snapshot whose hour has no head still
+// becomes a window the home and the hourly tab can open.
+export function withReadingHourEditions(editions, readings) {
+  const list = [];
   const seen = new Set();
-  for (const row of tree?.hours || []) {
-    const edition = row?.edition || row?.attempt || (row?.window ? row : null);
+  for (const edition of editions || []) {
     const startAt = Number(edition?.window?.startAt);
     if (!edition?.window || !Number.isFinite(startAt) || seen.has(startAt)) continue;
     seen.add(startAt);
-    editions.push(edition);
+    list.push(edition);
   }
-  return editions.sort((left, right) => right.window.startAt - left.window.startAt);
+  for (const row of readingHourRows(readings)) {
+    if (!row || row.missing === true) continue;
+    const startAt = Number(row.window?.startAt ?? row.startAt);
+    if (!Number.isFinite(startAt) || seen.has(startAt)) continue;
+    if (!(row.id || Array.isArray(row.items) || row.headline || row.status)) continue;
+    const endAt = Number(row.window?.endAt ?? row.endAt);
+    seen.add(startAt);
+    list.push({
+      id: row.id || '',
+      status: row.status || '',
+      window: {startAt, endAt: Number.isFinite(endAt) ? endAt : startAt + HOUR},
+    });
+  }
+  return list.sort((left, right) => right.window.startAt - left.window.startAt);
+}
+
+export function hourlyEditions(tree, readings) {
+  const editions = [];
+  for (const row of tree?.hours || []) {
+    const edition = row?.edition || row?.attempt || (row?.window ? row : null);
+    if (edition?.window) editions.push(edition);
+  }
+  return withReadingHourEditions(editions, readings);
 }
 
 export function readingTitles(snapshot, limit = 5) {

@@ -280,6 +280,16 @@ export function hourlyModelQueueTimeoutMs({queueTimeoutMs=120000,timeoutMs=18000
   return Math.max(Number(queueTimeoutMs) || 0, Number(timeoutMs) * 2 + 30_000);
 }
 
+// A non-latest hour used a fixed 8-minute budget after the queue wait grew to
+// one running call plus one cut-in. That wait alone can exceed 8 minutes, so
+// the catch-up died before the model started. Keep at least the current-hour
+// total, and enough for one queue wait plus one execution.
+export function hourlyCatchupBudgetMs({totalMs=20*60_000,queueTimeoutMs=120000,timeoutMs=180000}={}) {
+  const queue=hourlyModelQueueTimeoutMs({queueTimeoutMs,timeoutMs});
+  const oneCall=queue+Math.max(0,Number(timeoutMs)||0)+30_000;
+  return Math.max(Number(totalMs)||0,oneCall,8*60_000);
+}
+
 export function treeFailure(error,id,sourceVersion='',at=Date.now()) {
   let reason=error.code;
   if(!reason)reason=error.name==='ModelQueueTimeout' ? 'queue-timeout' : error.name==='ModelExecutionTimeout' ? 'execution-timeout' : error.name==='StageBudgetTimeout' ? 'budget-deferred' : error.name==='ZodError' || error instanceof SyntaxError ? 'invalid-output' : 'retryable-model-error';

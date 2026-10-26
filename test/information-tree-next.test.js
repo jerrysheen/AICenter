@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
-import {hourlyModelQueueTimeoutMs, treeFailure} from '../packages/domain/src/information-tree-policy.js';
+import {hourlyCatchupBudgetMs, hourlyModelQueueTimeoutMs, treeFailure} from '../packages/domain/src/information-tree-policy.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
 import {createInformationTreeJobHandlers,enqueueTreePreparation,TREE_PREPARE_JOB_TYPE,informationTreeManifest,enqueuePreparedHourRefreshes,prioritizeRecentTreePreparation,editionCoversMaterials} from '../packages/runtime/src/information-tree-module.js';
 import {createCapabilityRegistry} from '../packages/runtime/src/capability-registry.js';
@@ -352,6 +352,8 @@ test('a prepare refresh after the hourly slot is available within a minute',asyn
 test('hourly queue wait covers one running call plus one latest-hour cut-in', () => {
   assert.equal(hourlyModelQueueTimeoutMs(), 180000 * 2 + 30_000);
   assert.equal(hourlyModelQueueTimeoutMs({ queueTimeoutMs: 500000, timeoutMs: 180000 }), 500000);
+  assert.equal(hourlyCatchupBudgetMs(), 20 * 60_000);
+  assert.equal(hourlyCatchupBudgetMs({ totalMs: 60_000, queueTimeoutMs: 120_000, timeoutMs: 180_000 }), 180000 * 2 + 30_000 + 180_000 + 30_000);
   const at = 1_700_000_000_000;
   const queued = treeFailure(Object.assign(new Error('等待模型执行队列超时；本轮未获得执行机会'), { name: 'ModelQueueTimeout' }), 'stage', '', at);
   assert.equal(queued.reason, 'queue-timeout');

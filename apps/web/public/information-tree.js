@@ -1,6 +1,6 @@
 import { icon } from './icons.js?v=dev';
 import { decodeHtmlEntities } from './html-text.js?v=dev';
-import { homeHourItemTime, homeHourPublishedNote } from './home-timeline.js?v=dev';
+import { homeHourItemTime, homeHourPublishedNote, withReadingHourEditions } from './home-timeline.js?v=dev';
 import { newsDayLabel, newsRow, reportItemTime } from './news-list.js?v=dev';
 import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
@@ -614,7 +614,8 @@ export function createInformationTreePage(host) {
     selected=null;periods();setPrimary();return render();
   }
   function hourRows() {
-    return (manifest?.hours || []).map(choice).filter(Boolean).sort((a,b)=>b.window.startAt-a.window.startAt);
+    const rows=(manifest?.hours || []).map(choice).filter(Boolean);
+    return withReadingHourEditions(rows, readingIndex instanceof Map ? readingIndex : null);
   }
   let hourStripKey='',seenIds=[],seen=new Set(),opening={id:'',ticket:0},openTicket=0;
   const readingCache=new Map(), readingLoads=new Map(), openGaps=new Set();
@@ -1513,9 +1514,14 @@ export function createInformationTreePage(host) {
     writeHourHash(selectedHourStart);
     syncHourChrome();
     paintDelay(rows);
-    void loadReadingIndex().then(index=>{if(token===epoch) paintHourStrip(hourRows(), index instanceof Map ? index : null);}).catch(()=>{});
-    paintHourStrip(rows, readingIndex instanceof Map ? readingIndex : null);
     const edition=pool.find(item=>item.window.startAt===selectedHourStart) || rows.find(item=>item.window.startAt===selectedHourStart) || null;
+    const hadHour=Boolean(edition);
+    void loadReadingIndex().then(()=>{
+      if(token!==epoch) return;
+      if(!hadHour && hourRows().length) return render();
+      paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);
+    }).catch(()=>{});
+    paintHourStrip(rows, readingIndex instanceof Map ? readingIndex : null);
     selected=edition;root.dataset.editionId=edition?.id || '';root.dataset.windowStart=String(edition?.window.startAt ?? '');root.dataset.briefMode='hourly';
     if(!edition){clearHourSlow();finishOpening(claim,false);list.replaceChildren(el('p','这个小时还没有小时报。','tree-hour-empty'));return;}
     const key=edition.window.startAt;

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-hourly-report-restore.md`：页面上的「小时报」在 tree-v3 下读树刊期和阅读小时，不读已经停写的 `hourly_information_snapshots`。非当前小时的预算改为至少盖住一次排队加一次执行。`report.hourly.extract` 被重启打断时补回一次尝试。最近 24 个已结束小时里没有刊期头的小时会进入补跑。只有阅读稿的小时也能出现在列表里。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-26-podcast-reading-format.md`：窄屏播客阅读页不再把标题、频道和速读切换整块吸顶。页头随正文滚走；离开页头后向上滚，才露出一行返回、短标题和速读切换。Gemma 整理新文章时按章节写短段、列表和加粗，不再要求每段写成「主持人：」。已经落库的正文不重跑。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-26-feed-sync-recover-buffer.md`：X 推荐流单源同步默认 180 秒。`feed.subscription.sync` 的最长运行和领取租约都在这条时限上再加 120 秒，recoverStale 不再先于单源截止把任务记成 WorkerRunTimeout。一条都没写入时记 deadline，任务信号中止记 interrupted。不新增 migration。只需要重启 Worker。临时的 `AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS=180000` 可以留着，也可以删掉。

@@ -808,6 +808,10 @@ export function createStore(databasePath) {
     },
 
     recoverStaleJobs(staleAfterMs = 10 * 60_000, now = Date.now(), options = {}) {
+      // A restart drops the in-flight attempt. Translation and hourly extract
+      // get one extra max_attempts so the lease does not spend the budget.
+      // A runtime cap still fails without that refund.
+      const leaseRefundTypes = new Set(['feed.translation.run', 'report.hourly.extract']);
       const leaseMs = Number(staleAfterMs);
       const duration = Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : 10 * 60_000;
       const cutoff = Number(now) - duration;
@@ -832,14 +836,14 @@ export function createStore(databasePath) {
       database.transaction(() => {
         for (const row of rows) {
           const expiredRuntime = row.runtimeStale === true;
-          const leaseInterrupted = !expiredRuntime && row.type === 'feed.translation.run';
+          const leaseInterrupted = !expiredRuntime && leaseRefundTypes.has(row.type);
           const retry = leaseInterrupted || (!expiredRuntime && row.attempt_count < row.max_attempts);
           const status = retry ? 'queued' : 'failed';
           const error = expiredRuntime
             ? { name: 'WorkerRunTimeout', message: '任务运行超过时限，已释放以便队列继续' }
             : { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
-          // Keep attempt_count and the attempt row. A lease interrupt is compensated
-          // by one extra max_attempts so it does not consume the translation budget.
+          // Keep attempt_count and the attempt row. A lease interrupt adds one
+          // max_attempts for translation and hourly extract so a restart can resume.
           const attemptCount = row.attempt_count;
           const maxAttempts = leaseInterrupted ? Number(row.max_attempts) + 1 : row.max_attempts;
           const delay = row.type === 'feed.translation.run' && !leaseInterrupted ? translationRetryDelayMs(row.attempt_count) : 0;

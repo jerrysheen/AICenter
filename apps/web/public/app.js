@@ -8205,10 +8205,14 @@ function homeHourRow(item, edition) {
   };
 }
 
+function homeHourEditions() {
+  return hourlyEditions(state.homeTree, state.homeReadingHours);
+}
+
 function renderHomeHourlyModule() {
   const root = elements['home-timeline'];
   if (!root) return;
-  const editions = hourlyEditions(state.homeTree);
+  const editions = homeHourEditions();
   const narrow = window.matchMedia('(max-width: 700px)').matches;
   const sections = homeHourSections({
     editions,
@@ -8366,7 +8370,7 @@ async function loadHomeTree(path, token, { priority = 0, fresh = false } = {}) {
 }
 
 async function ensureHomeReadingSnapshots(token, { refresh = false, phase = 'visible' } = {}) {
-  const editions = hourlyEditions(state.homeTree);
+  const editions = homeHourEditions();
   const count = state.homeEarlier ? editions.length : 8;
   const narrow = window.matchMedia('(max-width: 700px)').matches;
   const visibleCount = narrow ? 3 : 4;
@@ -8482,7 +8486,7 @@ async function loadHomeBoard(path, { refresh = false, token = state.homeLoadToke
 }
 
 function homeHourlySnapshotReady() {
-  return hourlyEditions(state.homeTree).slice(0, 8).some((edition) => homeReadingReady(state.homeReadingHours[edition.window.startAt]));
+  return homeHourEditions().slice(0, 8).some((edition) => homeReadingReady(state.homeReadingHours[edition.window.startAt]));
 }
 
 function homeDataFresh(now = Date.now()) {
