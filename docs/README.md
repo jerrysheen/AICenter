@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-podcast-reader-bar.md`：单集阅读窄屏底栏改成信息流同款。四格 `.reader-mobile-bar.is-quad`，透明键、品牌色图标和 12px 竖排文案，返回键是「返回播客」。宽屏不另放一条大按钮。离开仍回到进来时的播客列表。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
+
 - `progress/2026-10-26-podcast-reader-exit.md`：单集阅读页底部固定「退出」。从播客列表或带频道的列表进来，就回到那一页；从其它页面进来或直接打开这一集，回到 `#podcasts`。窄屏阅读时底部页签让开。打开 YouTube 和速读切换仍在页头。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
 
 - `progress/2026-10-26-hourly-report-restore.md`：页面上的「小时报」在 tree-v3 下读树刊期和阅读小时，不读已经停写的 `hourly_information_snapshots`。非当前小时的预算改为至少盖住一次排队加一次执行。`report.hourly.extract` 被重启打断时补回一次尝试。最近 24 个已结束小时里没有刊期头的小时会进入补跑。只有阅读稿的小时也能出现在列表里。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
