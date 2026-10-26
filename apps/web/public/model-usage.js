@@ -6,7 +6,15 @@ function bambooDayLabel(day) {
   return `${Number(String(day).slice(4, 6))}月${Number(String(day).slice(6, 8))}日`;
 }
 
-// Newest Shanghai day is first. The count is feed admission only; the cap defaults to 7000.
+function bambooLimitText(limit) {
+  if (limit === null || limit === undefined) return '不限';
+  const value = Number(limit);
+  if (!Number.isFinite(value) || value <= 0) return '不限';
+  return number(value);
+}
+
+// Newest Shanghai day is first. The count is feed admission only.
+// A missing or null limit means the local daily cap is off.
 export function formatBambooDailySummary(days) {
   if (!Array.isArray(days) || days.length === 0) return '';
   const lines = ['Bamboo 每天调用（信息流准入）'];
@@ -14,8 +22,7 @@ export function formatBambooDailySummary(days) {
     const day = String(row?.day || '');
     const label = index === 0 ? '今天' : bambooDayLabel(day);
     const count = row?.count === null || row?.count === undefined ? '无法读取' : number(row.count);
-    const limit = Number.isFinite(Number(row?.limit)) ? number(Number(row.limit)) : number(7000);
-    lines.push(`${label} ${count} / ${limit}`);
+    lines.push(`${label} ${count} / ${bambooLimitText(row?.limit)}`);
   });
   return lines.join('\n');
 }

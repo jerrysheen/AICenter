@@ -64,14 +64,18 @@ function finiteUnit(value, fallback) {
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : fallback;
 }
 
-// 信息流准入每日上限。2026-10-11 至 10-17 的峰值是 7011（10-17），取整到百位。只管准入，默认先到先得。
-export const BAMBOO_DAILY_MAX_DEFAULT = 7000;
+// 信息流准入的本地日上限。未设置、空、0、unlimited、none、off 都不封顶。
+// 2026-10-11 至 10-17 的峰值 7011 曾被取整成默认 7000，那不是供应商额度。
+// 要封顶必须写成正整数。写错的值也不恢复 7000。只管准入，有上限时默认先到先得。
+export const BAMBOO_DAILY_MAX_DEFAULT = null;
+
+const UNLIMITED_DAILY_MAX = new Set(['', '0', 'unlimited', 'none', 'off']);
 
 export function resolveBambooDailyMax(env = process.env) {
-  const raw = String(env?.AI_CENTER_BAMBOO_DAILY_MAX ?? '').trim();
-  if (!raw) return BAMBOO_DAILY_MAX_DEFAULT;
+  const raw = String(env?.AI_CENTER_BAMBOO_DAILY_MAX ?? '').trim().toLowerCase();
+  if (UNLIMITED_DAILY_MAX.has(raw)) return BAMBOO_DAILY_MAX_DEFAULT;
   const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : BAMBOO_DAILY_MAX_DEFAULT;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : BAMBOO_DAILY_MAX_DEFAULT;
 }
 
 function limitBambooAdmission(client, { max, spread, now, log, usageDirectory }) {
@@ -399,9 +403,9 @@ function createFeedValueFilter({ client, config, lookup, calibration, xFocusConf
   const classify = bamboo || jevEnabled;
   const fallbackOn = jevEnabled ? config.fallback !== false : true;
   const now = typeof config.now === 'function' ? config.now : () => Date.now();
-  const dailyMax = Number.isInteger(config.bambooDailyMax) && config.bambooDailyMax >= 0
+  const dailyMax = Number.isInteger(config.bambooDailyMax) && config.bambooDailyMax > 0
     ? config.bambooDailyMax
-    : BAMBOO_DAILY_MAX_DEFAULT;
+    : null;
   const admissionClient = classify && bamboo
     ? limitBambooAdmission(client, {
       max: dailyMax,
