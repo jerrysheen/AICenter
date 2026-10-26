@@ -48,7 +48,7 @@ import { commitReportHistory, reportListHash, reportViewOwnsScroll, stackReportN
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, PODCAST_PAGE_SIZE, renderPodcastLibrary, renderPodcastReader, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
+import { appendPartialArticle, clearPodcastReaderChrome, episodeArticleMessage, foldedOriginal, mountPodcastReaderExit, partialArticleLabel, PODCAST_PAGE_SIZE, podcastExitAction, renderPodcastLibrary, renderPodcastReader, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
 import { articleAuthorFields, articleAuthorTarget, feedSearchCountText, feedSearchExcerpt, feedSearchMoreText, feedSearchPath, feedSearchPhase, feedSearchQueryReady, highlightParts, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
@@ -1378,6 +1378,8 @@ function setView(name, options = {}) {
   document.body.dataset.view = view;
   if (view !== 'report') briefPage.stop();
   document.body.dataset.reader = view === 'page' && state.pageKind === 'article' ? '1' : '';
+  document.body.dataset.podcastEpisode = view === 'page' && state.pageKind === 'podcast' ? '1' : '';
+  if (document.body.dataset.podcastEpisode !== '1') clearPodcastReaderChrome(elements['page-root']);
   if (view === 'page' && !options.fromHistory && !options.back && !options.replace
     && normalizeRoute(previousHash) !== requested) {
     // Make the return label available during the first render, before committing history.
@@ -9934,21 +9936,40 @@ async function reloadPodcasts() {
   if (state.pageKind === 'podcast') renderPodcastEpisodePage();
 }
 
+function leavePodcastEpisode() {
+  const previous = String(history.state?.aiCenterPrevious || state.trail.at(-1) || '');
+  const action = podcastExitAction(previous);
+  if (state.trail.length) state.trail.pop();
+  if (action.historyBack && history.state?.aiCenterPrevious) {
+    history.back();
+    return;
+  }
+  setView(action.route, { back: true });
+}
+
+function showPodcastExit() {
+  mountPodcastReaderExit(() => leavePodcastEpisode(), pageRoot());
+}
+
 function renderPodcastEpisodePage({ refresh = true } = {}) {
   const root = pageRoot();
   if (!root) return;
   const id = String(state.pageId || '');
   if (!/^[A-Za-z0-9_-]{6,}$/.test(id)) {
-    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => setView('podcasts') });
+    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => leavePodcastEpisode() });
+    showPodcastExit();
     return;
   }
   const episode = state.youtubeEpisodes[id] || catalogEpisode(id);
   if (episode?.missing) {
-    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => setView('podcasts') });
+    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => leavePodcastEpisode() });
+    showPodcastExit();
     return;
   }
-  if (!episode) renderViewState(root, { kind: 'loading', title: '正在读取这一集…', message: '正在读取中文正文。' });
-  else paintPodcastEpisode(root, episode);
+  if (!episode) {
+    renderViewState(root, { kind: 'loading', title: '正在读取这一集…', message: '正在读取中文正文。' });
+    showPodcastExit();
+  } else paintPodcastEpisode(root, episode);
   if (!refresh) return;
   const ready = youtubeArticleReady(episode);
   const hasBody = Boolean(String(episode?.body || '').trim());
@@ -9963,6 +9984,7 @@ function paintPodcastEpisode(root, episode) {
     starIcon: icon('star'),
     focused: itemIsFocused(podcastFocusPost(episode)),
     onBack: () => goBack(),
+    onExit: () => leavePodcastEpisode(),
     onMode: (mode) => {
       state.podcastReaderMode = mode === 'speed' ? 'speed' : 'full';
       paintPodcastEpisode(root, state.youtubeEpisodes[episode.videoId] || episode);
@@ -10040,7 +10062,8 @@ async function loadPodcastEpisode(id) {
     if (document.body.dataset.view === 'page' && state.pageKind === 'podcast' && state.pageId === id) {
       const episode = state.youtubeEpisodes[id];
       if (episode?.missing) {
-        renderViewState(pageRoot(), { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => setView('podcasts') });
+        renderViewState(pageRoot(), { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => leavePodcastEpisode() });
+        showPodcastExit();
       } else if (episode) {
         paintPodcastEpisode(pageRoot(), episode);
         if (!youtubeArticleReady(episode)) scheduleYoutubeArticleWatch({ id: `youtube:${id}`, platform: 'youtube' });

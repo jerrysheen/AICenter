@@ -526,26 +526,68 @@ export function podcastReaderFloatVisibility({
   return Boolean(shown);
 }
 
-function bindPodcastChrome(root, floatBar, flowBar) {
+// 退出回到进入这一集时的播客列表。频道筛选和频道页保持原查询；其它入口回到播客列表。
+export function podcastExitAction(from = '') {
+  const route = String(from || '').replace(/^#?\/*/, '');
+  const path = route.split('?')[0];
+  if (path === 'podcasts') return { route, historyBack: true };
+  return { route: 'podcasts', historyBack: false };
+}
+
+function podcastExitControl(onExit) {
+  const bar = el('div', 'podcast-reader-exit');
+  const button = el('button', 'podcast-reader-exit-button', '退出');
+  button.type = 'button';
+  button.setAttribute('aria-label', '退出阅读');
+  bar.append(button);
+  button.addEventListener('click', () => onExit());
+  return bar;
+}
+
+function removePodcastChrome(selector, keep = null) {
+  if (typeof document.querySelectorAll !== 'function') return;
+  for (const node of document.querySelectorAll(selector)) {
+    if (node !== keep && typeof node.remove === 'function') node.remove();
+  }
+}
+
+export function mountPodcastReaderExit(onExit = () => {}, root = null) {
+  if (root && typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
+  const body = typeof document !== 'undefined' ? document.body : null;
+  if (!body || typeof body.append !== 'function') return null;
+  removePodcastChrome('.podcast-reader-exit');
+  const bar = podcastExitControl(onExit);
+  body.append(bar);
+  return bar;
+}
+
+export function clearPodcastReaderChrome(root = null) {
+  if (root && typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
+  removePodcastChrome('.podcast-reader-exit');
+  removePodcastChrome('.podcast-reader-float');
+}
+
+function bindPodcastChrome(root, floatBar, flowBar, exitBar) {
   const view = typeof window !== 'undefined' ? window : null;
   if (!view || typeof view.addEventListener !== 'function' || !floatBar) return;
   if (typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
   // 页壳有 overflow-x: clip，固定条放在 body 上才相对视口，而不是被滚走的页头带着走。
-  if (typeof document.querySelectorAll === 'function') {
-    for (const node of document.querySelectorAll('.podcast-reader-float')) {
-      if (node !== floatBar) node.remove();
-    }
-  }
-  if (document.body && typeof document.body.append === 'function' && floatBar.parentElement !== document.body) {
-    document.body.append(floatBar);
+  removePodcastChrome('.podcast-reader-float', floatBar);
+  removePodcastChrome('.podcast-reader-exit', exitBar);
+  if (document.body && typeof document.body.append === 'function') {
+    if (floatBar.parentElement !== document.body) document.body.append(floatBar);
+    if (exitBar && exitBar.parentElement !== document.body) document.body.append(exitBar);
   }
   let lastY = Number(view.scrollY) || 0;
   let shown = false;
   let ticking = false;
   const media = typeof view.matchMedia === 'function' ? view.matchMedia('(max-width: 720px)') : null;
+  let observer = null;
   const release = () => {
     view.removeEventListener('scroll', onScroll);
-    if (typeof floatBar.remove === 'function' && flowBar?.isConnected === false) floatBar.remove();
+    observer?.disconnect();
+    if (typeof floatBar.remove === 'function') floatBar.remove();
+    if (exitBar && typeof exitBar.remove === 'function') exitBar.remove();
     if (root._podcastScrollCleanup === release) root._podcastScrollCleanup = null;
   };
   const apply = () => {
@@ -579,20 +621,13 @@ function bindPodcastChrome(root, floatBar, flowBar) {
     else apply();
   };
   view.addEventListener('scroll', onScroll, { passive: true });
-  let observer = null;
   if (typeof MutationObserver === 'function' && root) {
     observer = new MutationObserver(() => {
-      if (flowBar?.isConnected === false) {
-        observer.disconnect();
-        release();
-      }
+      if (flowBar?.isConnected === false) release();
     });
     observer.observe(root, { childList: true });
   }
-  root._podcastScrollCleanup = () => {
-    observer?.disconnect();
-    release();
-  };
+  root._podcastScrollCleanup = release;
 }
 
 function readerTabs(reading, onMode, className) {
@@ -612,6 +647,7 @@ export function renderPodcastReader(root, {
   starIcon = '',
   focused = false,
   onBack = () => {},
+  onExit = null,
   onMode = () => {},
   onChannel = () => {},
   onStar = () => {},
@@ -661,9 +697,10 @@ export function renderPodcastReader(root, {
   body.dataset.readerPane = reading;
   if (reading === 'speed') fillSpeedRead(body, episode, () => onMode('full'));
   else fillFullArticle(body, episode);
-  article.append(bar, body, floatBar);
+  const exitBar = podcastExitControl(onExit || onBack);
+  article.append(bar, body, floatBar, exitBar);
   root.append(article);
-  bindPodcastChrome(root, floatBar, bar);
+  bindPodcastChrome(root, floatBar, bar, exitBar);
 }
 
 function markPodcastKeypoints(article) {

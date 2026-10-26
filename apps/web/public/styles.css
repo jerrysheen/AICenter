@@ -6365,6 +6365,43 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 }
 @media (prefers-reduced-motion: reduce) {
   .podcast-reader-float { transition: none; }
+  .podcast-reader-exit button:active { transform: none; }
+}
+body[data-podcast-episode="1"] .bottom-tab,
+body[data-podcast-episode="1"] .ask-live-chip { display: none; }
+body[data-podcast-episode="1"] main {
+  padding-bottom: calc(60px + env(safe-area-inset-bottom));
+}
+.podcast-reader-exit {
+  position: fixed;
+  z-index: 25;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 4px var(--page-gutter) calc(4px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--comp-tertiary);
+  background: var(--background-primary);
+}
+.podcast-reader-exit button {
+  width: min(100%, 40em);
+  min-height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--brand);
+  color: var(--font-on-primary);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.podcast-reader-exit button:active { transform: scale(0.98); }
+@media (min-width: 1200px) {
+  .podcast-reader-exit { left: var(--side-nav); }
 }
 .podcast-episodes.news-rows .news-row:has(> .focus-btn) { grid-template-columns: minmax(0, 1fr) 44px; }
 .podcast-episodes .news-row-title { font-weight: 700; }
