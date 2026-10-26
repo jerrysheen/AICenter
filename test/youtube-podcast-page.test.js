@@ -19,11 +19,15 @@ class El {
   append(...nodes) { this.children.push(...nodes); }
   replaceChildren(...nodes) { this.children = nodes; }
   addEventListener(type, fn) { this.listeners[type] = fn; }
+  setAttribute(name, value) { this[name] = String(value); }
   set innerHTML(value) { this._html = String(value); }
   get innerHTML() { return this._html; }
 }
 
-globalThis.document = { createElement: (tag) => new El(tag) };
+globalThis.document = {
+  createElement: (tag) => new El(tag),
+  createTextNode: (text) => Object.assign(new El('#text'), { textContent: String(text) }),
+};
 
 const pageDir = mkdtempSync(path.join(os.tmpdir(), 'youtube-page-'));
 const publicDir = path.resolve('apps/web/public');
@@ -58,6 +62,9 @@ const {
   youtubeArticleRequestPath,
   YOUTUBE_ARTICLE_POLL_NEAR_MS,
   YOUTUBE_ARTICLE_POLL_SLOW_MS,
+  renderPodcastLibrary,
+  renderPodcastReader,
+  podcastStatusLabel,
 } = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
 process.on('exit', () => rmSync(pageDir, { recursive: true, force: true }));
 
@@ -65,6 +72,11 @@ function findAll(node, predicate, found = []) {
   if (predicate(node)) found.push(node);
   for (const child of node.children || []) findAll(child, predicate, found);
   return found;
+}
+
+function textOf(node) {
+  const own = node.children?.length ? (node.textContent || '') : `${node.textContent || ''}${node.innerHTML || ''}`;
+  return `${own}${(node.children || []).map(textOf).join('')}`;
 }
 
 test('ready article renders markdown and pending text is marked', async () => {
@@ -155,4 +167,165 @@ test('queued article polls the status path slowly until the expected time is clo
   assert.equal(youtubeReaderScopeLabel({ id: 'youtube:2Zj6uMv3kTA', platform: 'youtube' }, { articleStatus: 'ready' }), '正文完整');
   assert.equal(youtubeReaderScopeLabel({ id: 'media:1', platform: 'media', complete: false, bodyScope: '仅摘要' }, null), null);
   assert.equal(YOUTUBE_ARTICLE_POLL_SLOW_MS >= 3 * 60 * 1000, true);
+});
+
+function zonePayload() {
+  return {
+    enabled: true,
+    creators: [
+      {
+        id: 'odd-lots',
+        name: 'Odd Lots',
+        followed: true,
+        episodes: [
+          {
+            videoId: 'oldervid0001',
+            title: '较早的一集',
+            creatorName: 'Odd Lots',
+            publishedAt: Date.parse('2026-10-17T01:00:00Z'),
+            durationSec: 3600,
+            status: 'ready',
+            transcriptSource: 'subtitle-auto',
+            articleStatus: 'pending',
+            article: { status: 'queued', message: '中文整理排队中' },
+            isRead: true,
+          },
+          {
+            videoId: 'readyvid0001',
+            title: '已经整理的一集',
+            creatorName: 'Odd Lots',
+            publishedAt: Date.parse('2026-10-18T01:00:00Z'),
+            durationSec: 4200,
+            status: 'ready',
+            transcriptSource: 'subtitle-auto',
+            articleStatus: 'ready',
+            article: { status: 'ready' },
+            isRead: false,
+            body: '## 要点\n\n主持人：正文。',
+          },
+        ],
+      },
+      {
+        id: 'all-in',
+        name: 'All-In',
+        followed: false,
+        episodes: [
+          {
+            videoId: 'failedvid001',
+            title: '还没有字幕',
+            creatorName: 'All-In',
+            publishedAt: Date.parse('2026-10-19T01:00:00Z'),
+            durationSec: 1800,
+            status: 'failed',
+            isRead: false,
+          },
+          {
+            videoId: 'speedvid0001',
+            title: '可以速读',
+            creatorName: 'All-In',
+            publishedAt: Date.parse('2026-10-16T01:00:00Z'),
+            durationSec: 7200,
+            status: 'ready',
+            transcriptSource: 'subtitle-auto',
+            articleStatus: 'ready',
+            article: { status: 'ready' },
+            speedRead: { status: 'ready', text: '三句话讲完。' },
+            isRead: false,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test('podcast zone lists episodes newest first with honest status and keeps read rows', () => {
+  const payload = zonePayload();
+  assert.deepEqual(podcastStatusLabel(payload.creators[1].episodes[0]), '视频待整理');
+  assert.equal(podcastStatusLabel(payload.creators[0].episodes[1]), '已整理');
+  assert.equal(podcastStatusLabel(payload.creators[0].episodes[0]), '整理中');
+  assert.equal(podcastStatusLabel(payload.creators[1].episodes[1]), '速读可用');
+  const root = new El('div');
+  let opened = '';
+  let more = 0;
+  renderPodcastLibrary(root, {
+    payload,
+    shown: 2,
+    now: Date.parse('2026-10-19T08:00:00Z'),
+    onOpen: (episode) => { opened = episode.videoId; },
+    onMore: () => { more += 1; },
+  });
+  const titles = findAll(root, (node) => node.className === 'news-row-title').map((node) => node.textContent);
+  assert.deepEqual(titles, ['还没有字幕', '已经整理的一集']);
+  const sources = findAll(root, (node) => node.className === 'news-row-source').map((node) => node.textContent);
+  assert.match(sources[0], /All-In · 30分钟 · 视频待整理/);
+  assert.match(sources[1], /Odd Lots · 1小时10分钟 · 已整理/);
+  const rows = findAll(root, (node) => node.className?.startsWith('news-row'));
+  assert.equal(rows.some((row) => row.className.includes('is-muted')), false);
+  findAll(root, (node) => node.className === 'news-row-body official-event-body feed-content')[0].listeners.click();
+  assert.equal(opened, 'failedvid001');
+  const moreButton = findAll(root, (node) => node.textContent === '加载更多')[0];
+  moreButton.listeners.click();
+  assert.equal(more, 1);
+  renderPodcastLibrary(root, { payload, now: Date.parse('2026-10-19T08:00:00Z') });
+  const allRows = findAll(root, (node) => node.className === 'news-row' || node.className === 'news-row is-muted');
+  assert.equal(allRows.length, 4);
+  assert.equal(allRows.some((row) => row.className.includes('is-muted') && row.dataset.videoId === 'oldervid0001'), true);
+  assert.equal(findAll(root, (node) => node.textContent === '加载更多').length, 0);
+});
+
+test('podcast channel pane keeps followed channels first and filters episodes', () => {
+  const payload = zonePayload();
+  const root = new El('div');
+  let channel = '';
+  renderPodcastLibrary(root, { payload, pane: 'channels', onChannel: (id) => { channel = id; } });
+  const names = findAll(root, (node) => node.tagName === 'strong').map((node) => node.textContent);
+  assert.equal(names[0], 'Odd Lots');
+  assert.equal(findAll(root, (node) => node.textContent === '已关注').length, 1);
+  const channelButtons = findAll(root, (node) => node.tagName === 'button' && /^podcast-channel( |$)/.test(node.className));
+  channelButtons[1].listeners.click();
+  assert.equal(channel, 'all-in');
+  renderPodcastLibrary(root, { payload, channel: 'odd-lots' });
+  const titles = findAll(root, (node) => node.className === 'news-row-title').map((node) => node.textContent);
+  assert.deepEqual(titles, ['已经整理的一集', '较早的一集']);
+  renderPodcastLibrary(root, { payload: { enabled: false, creators: [] } });
+  assert.match(textOf(root), /播客还没打开/);
+  renderPodcastLibrary(root, { payload: { enabled: true, creators: [] } });
+  assert.match(textOf(root), /还没有播客单集/);
+});
+
+test('podcast reader keeps the speed switch and does not call an unfinished article complete', () => {
+  const payload = zonePayload();
+  const pending = payload.creators[0].episodes[0];
+  const ready = payload.creators[0].episodes[1];
+  const failed = payload.creators[1].episodes[0];
+  const speed = payload.creators[1].episodes[1];
+  const root = new El('div');
+  let mode = '';
+  let back = 0;
+  renderPodcastReader(root, {
+    episode: pending,
+    mode: 'speed',
+    onMode: (next) => { mode = next; },
+    onBack: () => { back += 1; },
+  });
+  assert.match(textOf(root), /速读整理中/);
+  assert.equal(textOf(root).includes('正文完整'), false);
+  assert.equal(findAll(root, (node) => node.textContent === '速读版').length, 1);
+  assert.equal(findAll(root, (node) => node.textContent === '全文').length, 1);
+  findAll(root, (node) => node.textContent === '‹ 返回')[0].listeners.click();
+  assert.equal(back, 1);
+  findAll(root, (node) => node.textContent === '全文')[0].listeners.click();
+  assert.equal(mode, 'full');
+  renderPodcastReader(root, { episode: failed, mode: 'full' });
+  assert.match(textOf(root), /视频待整理/);
+  assert.equal(textOf(root).includes('正文完整'), false);
+  assert.equal(findAll(root, (node) => node.className === 'podcast-article').length, 0);
+  const link = findAll(root, (node) => node.textContent === '打开 YouTube ↗')[0];
+  assert.equal(link.href, 'https://www.youtube.com/watch?v=failedvid001');
+  renderPodcastReader(root, { episode: ready, mode: 'full' });
+  assert.match(findAll(root, (node) => node.className === 'podcast-article')[0].innerHTML, /主持人/);
+  assert.equal(textOf(root).includes('正文完整'), false);
+  renderPodcastReader(root, { episode: speed, mode: 'speed' });
+  assert.match(textOf(root), /三句话讲完/);
+  assert.equal(textOf(root).includes('速读整理中'), false);
 });
