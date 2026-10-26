@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createStore } from '../packages/database/src/index.js';
@@ -17,6 +17,9 @@ import {
   FEED_SUBSCRIPTION_SYNC_JOB_TYPE,
   FEED_SUBSCRIPTION_SYNC_SCHEDULE_KEY,
   FEED_SUBSCRIPTIONS_SYNC_JOB_TYPE,
+  FEED_SYNC_RECOVER_BUFFER_MS,
+  feedSubscriptionSyncMaxRunningMs,
+  feedSyncSourceTimeoutMs,
   prepareFeedSyncEnqueue,
 } from '../packages/runtime/src/feed-automation-module.js';
 import { ensureDailyReportSchedule } from '../packages/runtime/src/report-module.js';
@@ -908,10 +911,11 @@ test('a source timeout with no items retries in five minutes', async () => {
     refreshIntervalMinutes: 30,
     nextSyncAt: Date.now() - 1_000,
   });
+  const logs = [];
   const handlers = createFeedAutomationJobHandlers({
     feedRepository: feed,
     sourceTimeoutMs: 40,
-    log() {},
+    log: (line) => logs.push(line),
     feedService: {
       async refreshPersistedSource() {
         return { added: 0, addedItemIds: [], deadline: true };
@@ -930,9 +934,11 @@ test('a source timeout with no items retries in five minutes', async () => {
   });
   const completed = await drainSubscriptionJobs(temporary.store, handlers);
   const child = completed.find((job) => job.type === FEED_SUBSCRIPTION_SYNC_JOB_TYPE);
-  assert.equal(child.output.status, 'failed');
+  assert.equal(child.output.status, 'deadline');
   assert.equal(child.output.reason, 'deadline');
   assert.equal(child.output.added, 0);
+  assert.equal(logs.some((line) => line.includes('status=failed')), false);
+  assert.ok(logs.some((line) => line.includes('status=deadline') && line.includes('reason=deadline') && line.includes('added=0')));
   const row = feed.listDueSubscriptions(Date.now() + 400 * 24 * 60 * 60_000, 10)
     .find((item) => item.id === subscription.id);
   assert.equal(row.lastSyncAt, null);
@@ -1000,6 +1006,243 @@ test('late complete after interruption does not overwrite new lease', async () =
     .find((item) => item.id === subscription.id);
   assert.equal(after.nextSyncAt, newer.leaseUntil);
   assert.equal(after.lastSyncAt, null);
+  temporary.remove();
+});
+
+function dueHomeSubscription(feed, externalId = 'x:home:for-you') {
+  const account = feed.upsertSourceAccount({
+    workspaceId: 'local',
+    provider: 'x',
+    externalId,
+    displayName: 'X',
+    metadata: {
+      sourceId: 'content.x.home',
+      sourceInput: { feed: 'for-you' },
+      autoRefresh: true,
+    },
+  });
+  return feed.upsertSubscription({
+    workspaceId: 'local',
+    sourceAccountId: account.id,
+    refreshIntervalMinutes: 30,
+    nextSyncAt: Date.now() - 1_000,
+  });
+}
+
+function automationHandlers(feed, { sourceTimeoutMs = 40, refreshPersistedSource, log = () => {} }) {
+  return createFeedAutomationJobHandlers({
+    feedRepository: feed,
+    sourceTimeoutMs,
+    log,
+    feedService: {
+      refreshPersistedSource,
+      async localizeContentItems() { return { pendingIds: [] }; },
+      listTaggableItems() { return []; },
+    },
+    taggingService: {
+      async analyzeItems() { return { saved: [], missingItemIds: [], skipped: 0 }; },
+    },
+  });
+}
+
+test('source timeout defaults to 180s and the recover buffer stays 120s past it', () => {
+  const previous = process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS;
+  try {
+    delete process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS;
+    assert.equal(FEED_SYNC_RECOVER_BUFFER_MS, 120_000);
+    assert.equal(feedSyncSourceTimeoutMs(), 180_000);
+    assert.equal(feedSubscriptionSyncMaxRunningMs(), 300_000);
+    assert.equal(feedSyncSourceTimeoutMs(''), 180_000);
+    assert.equal(feedSyncSourceTimeoutMs('0'), 180_000);
+    process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS = '90000';
+    assert.equal(feedSyncSourceTimeoutMs(), 90_000);
+    assert.equal(feedSubscriptionSyncMaxRunningMs(), 210_000);
+    process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS = '1000';
+    assert.equal(feedSyncSourceTimeoutMs(), 15_000);
+    assert.equal(feedSubscriptionSyncMaxRunningMs() - feedSyncSourceTimeoutMs(), FEED_SYNC_RECOVER_BUFFER_MS);
+    process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS = '999999';
+    assert.equal(feedSyncSourceTimeoutMs(), 3 * 60_000);
+    assert.ok(feedSubscriptionSyncMaxRunningMs('15000') > feedSyncSourceTimeoutMs('15000'));
+    const worker = readFileSync(new URL('../apps/worker/src/worker.js', import.meta.url), 'utf8');
+    assert.match(worker, /\[FEED_SUBSCRIPTION_SYNC_JOB_TYPE\]:\s*feedSubscriptionSyncMaxRunningMs\(env\.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS\)/);
+  } finally {
+    if (previous == null) delete process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS;
+    else process.env.AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS = previous;
+  }
+});
+
+test('claim lease uses the same 120s buffer as the job max runtime', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const subscription = dueHomeSubscription(feed);
+  const sourceTimeoutMs = 50_000;
+  let seenLease = 0;
+  const handlers = automationHandlers(feed, {
+    sourceTimeoutMs,
+    async refreshPersistedSource() {
+      const row = feed.listDueSubscriptions(Date.now() + 400 * 24 * 60 * 60_000, 10)
+        .find((item) => item.id === subscription.id);
+      seenLease = row.nextSyncAt;
+      return { added: 1, addedItemIds: ['kept'] };
+    },
+  });
+  const started = Date.now();
+  const output = await handlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: subscription.id },
+    { store: temporary.store },
+  );
+  assert.equal(output.status, 'succeeded');
+  const expected = sourceTimeoutMs + FEED_SYNC_RECOVER_BUFFER_MS;
+  assert.ok(seenLease >= started + expected);
+  assert.ok(seenLease <= started + expected + 2_000);
+  const again = dueHomeSubscription(feed, 'x:home:for-you-lease');
+  const parent = new AbortController();
+  parent.abort();
+  const claimedAt = Date.now();
+  const interrupted = await handlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: again.id },
+    { store: temporary.store, signal: parent.signal },
+  );
+  assert.equal(interrupted.status, 'interrupted');
+  assert.equal(interrupted.reason, 'signal');
+  const leased = feed.listDueSubscriptions(claimedAt + 400 * 24 * 60 * 60_000, 10)
+    .find((item) => item.id === again.id);
+  assert.ok(leased.nextSyncAt >= claimedAt + expected);
+  assert.ok(leased.nextSyncAt <= claimedAt + expected + 2_000);
+  assert.equal(leased.lastSyncAt, null);
+  temporary.remove();
+});
+
+test('a source abort or deadline error with no items is deadline, not failed', async () => {
+  const temporary = temporaryStore();
+  const feed = temporary.store.repositories.feed;
+  const logs = [];
+  const aborted = dueHomeSubscription(feed, 'x:home:for-you-abort');
+  const abortHandlers = automationHandlers(feed, {
+    sourceTimeoutMs: 40,
+    log: (line) => logs.push(line),
+    async refreshPersistedSource(input) {
+      await new Promise((resolve, reject) => {
+        const fail = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+        if (input.signal.aborted) {
+          fail();
+          return;
+        }
+        const timer = setTimeout(fail, 5_000);
+        input.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          fail();
+        }, { once: true });
+      });
+    },
+  });
+  const abortOutput = await abortHandlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: aborted.id },
+    { store: temporary.store },
+  );
+  assert.equal(abortOutput.status, 'deadline');
+  assert.equal(abortOutput.reason, 'deadline');
+  assert.equal(abortOutput.added, 0);
+  assert.notEqual(abortOutput.status, 'failed');
+
+  const deadline = dueHomeSubscription(feed, 'x:home:for-you-deadline');
+  const deadlineHandlers = automationHandlers(feed, {
+    sourceTimeoutMs: 60_000,
+    log: (line) => logs.push(line),
+    async refreshPersistedSource() {
+      const error = new Error('这一路抓取超过单源时限，已留给下一次');
+      error.deadline = true;
+      error.code = 'deadline';
+      throw error;
+    },
+  });
+  const deadlineOutput = await deadlineHandlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: deadline.id },
+    { store: temporary.store },
+  );
+  assert.equal(deadlineOutput.status, 'deadline');
+  assert.equal(deadlineOutput.reason, 'deadline');
+  assert.equal(deadlineOutput.added, 0);
+  const row = feed.listDueSubscriptions(Date.now() + 400 * 24 * 60 * 60_000, 10)
+    .find((item) => item.id === deadline.id);
+  assert.equal(row.lastSyncAt, null);
+  assert.ok(row.nextSyncAt <= Date.now() + 5 * 60_000 + 5_000);
+  assert.ok(row.nextSyncAt >= Date.now() + 5 * 60_000 - 5_000);
+
+  const parent = new AbortController();
+  const signalled = dueHomeSubscription(feed, 'x:home:for-you-signal');
+  const signalHandlers = automationHandlers(feed, {
+    sourceTimeoutMs: 60_000,
+    log: (line) => logs.push(line),
+    async refreshPersistedSource() {
+      parent.abort();
+      throw Object.assign(new Error('aborted'), { name: 'AbortError', code: 'ABORT_ERR' });
+    },
+  });
+  const signalOutput = await signalHandlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: signalled.id },
+    { store: temporary.store, signal: parent.signal },
+  );
+  assert.equal(signalOutput.status, 'interrupted');
+  assert.equal(signalOutput.reason, 'signal');
+  assert.notEqual(signalOutput.status, 'failed');
+
+  const broken = dueHomeSubscription(feed, 'x:home:for-you-broken');
+  const failedHandlers = automationHandlers(feed, {
+    sourceTimeoutMs: 60_000,
+    log: (line) => logs.push(line),
+    async refreshPersistedSource() {
+      throw new Error('login_required');
+    },
+  });
+  const failedOutput = await failedHandlers[FEED_SUBSCRIPTION_SYNC_JOB_TYPE](
+    { workspaceId: 'local', subscriptionId: broken.id },
+    { store: temporary.store },
+  );
+  assert.equal(failedOutput.status, 'failed');
+  assert.equal(failedOutput.reason, undefined);
+  assert.match(failedOutput.error, /login_required/);
+  assert.equal(logs.some((line) => line.includes('status=failed') && line.includes('reason=deadline')), false);
+  assert.ok(logs.some((line) => line.includes('status=deadline') && line.includes('reason=deadline')));
+  assert.ok(logs.some((line) => line.includes('status=interrupted') && line.includes('reason=signal')));
+  temporary.remove();
+});
+
+test('a deadline error snapshot keeps the deadline flag for sync classification', async () => {
+  const temporary = temporaryStore();
+  const sources = definitions();
+  const service = createFeedService({
+    legacyRepository: temporary.store,
+    feedRepository: temporary.store.repositories.feed,
+    sourcePort: {
+      persistence(sourceId, input) {
+        return sources.get(sourceId).persistence(input);
+      },
+      async read() {
+        return {
+          data: {
+            mode: 'error',
+            deadline: true,
+            note: '这一路抓取超过单源时限，已留给下一次',
+            items: [],
+          },
+        };
+      },
+    },
+  });
+  await assert.rejects(
+    () => service.refreshPersistedSource({
+      workspaceId: 'local',
+      sourceId: 'content.x.home',
+      sourceInput: { feed: 'for-you' },
+    }),
+    (error) => {
+      assert.equal(error.deadline, true);
+      assert.equal(error.code, 'deadline');
+      assert.match(error.message, /单源时限/);
+      return true;
+    },
+  );
   temporary.remove();
 });
 
