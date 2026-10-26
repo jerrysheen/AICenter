@@ -6,17 +6,25 @@ import {
   dedupeRollingCaptions,
   stripResidualEnglish,
   captionAlreadyChinese,
+  CHAPTER_DIALOGUE_LAYOUT,
+  CHAPTER_SUMMARY_SYSTEM,
   GEMMA_ARTICLE_TITLE_SYSTEM,
+  GEMMA_DIALOGUE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
   articleTitleSource,
+  chapterSummaryPrompt,
+  flashSummaryBatches,
   gemmaArticleNeedsRepair,
   gemmaSummarySource,
+  joinChapterDialogue,
   normalizeArticleTitle,
+  parseChapterSummaries,
   joinArticleParts,
   joinGemmaArticle,
   repairTimestampHeading,
+  stripDuplicateChapterTitles,
   timestampOnlyHeading,
   needsChineseTitle,
   needsEnglishQuote,
@@ -38,13 +46,16 @@ import {
   GEMMA_26B,
   GEMMA_31B,
   LONG_VIDEO_GEMMA_SCHEDULE,
+  gemmaRequestBudget,
   longVideoCallBudget,
   longVideoPartBounds,
   splitSummaryBlocks,
 } from '../../domain/src/gemma-long-video.js';
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
-// Gemma 失败时，缺的那一段可以改用现有 Gemini Flash。豆包只在引擎显式写成 doubao 时使用。
+// 新开的整理：Gemini Flash Lite 一次写出各章总结，Gemma 26B 按章排对话。
+// Flash 总结失败时改由 Gemma 写同一份 JSON；Gemma 对话失败时，这一章改用 Flash。
+// 已经落库、状态里没有 chapter-dialogue 的旧文不自动重写。豆包只在引擎显式写成 doubao 时使用。
 // 标题和关键句的中文化仍只用 Gemma，不走 Flash。
 // 正文整理完成后，再用 Gemma 按中文正文写一句话标题；失败就留着原来的标题。
 
@@ -140,6 +151,64 @@ function addCalls(target, extra) {
 function attachCalls(error, calls) {
   if (error && typeof error === 'object') error.articleCalls = calls;
   return error;
+}
+
+function gemmaSummaryBatches(sections) {
+  const batches = [];
+  let current = [];
+  const fits = (blocks) => gemmaRequestBudget(CHAPTER_SUMMARY_SYSTEM, chapterSummaryPrompt(blocks), 4096).fits;
+  for (const batch of flashSummaryBatches(sections, Number.MAX_SAFE_INTEGER)) {
+    for (const block of batch) {
+      const next = current.concat(block);
+      if (current.length && !fits(next)) {
+        batches.push(current);
+        current = [block];
+      } else {
+        current = next;
+      }
+    }
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+async function readSummaryBatches(generate, batches, calls, provider) {
+  const summaries = [];
+  for (const blocks of batches) {
+    calls[provider] += 1;
+    const result = await generate({ system: CHAPTER_SUMMARY_SYSTEM, prompt: chapterSummaryPrompt(blocks) });
+    const parsed = parseChapterSummaries(result?.text, blocks.length);
+    if (!parsed) throw new Error('章节总结不是完整 JSON');
+    summaries.push(...parsed);
+  }
+  return summaries;
+}
+
+// 总结优先一次 Flash。失败且不是配额窗口时，改由 Gemma 写同一份 JSON；放不进 26B 额度时才按章分批。
+async function callChapterSummaries(deps, sections) {
+  const calls = callCounts();
+  const flash = articleFlash(deps);
+  if (flash) {
+    try {
+      const summaries = await readSummaryBatches(flash, flashSummaryBatches(sections), calls, 'flash');
+      if (summaries.length !== sections.length) throw new Error('章节总结条数不对');
+      return { summaries, provider: 'flash', calls };
+    } catch (error) {
+      if (error?.code === 'budget-deferred' || deps.signal?.aborted) throw attachCalls(error, calls);
+    }
+  }
+  try {
+    const summaries = await readSummaryBatches(
+      articleGemma(deps),
+      gemmaSummaryBatches(sections),
+      calls,
+      'gemma',
+    );
+    if (summaries.length !== sections.length) throw new Error('章节总结条数不对');
+    return { summaries, provider: 'gemma', calls };
+  } catch (error) {
+    throw attachCalls(error, calls);
+  }
 }
 
 async function callArticleModel(deps, input) {
@@ -600,6 +669,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   const reusable = saved?.engine === 'gemma' && saved.hash === hash && Array.isArray(saved.parts) && saved.parts.length;
   if (row.articleStatus === 'ready' && reusable && !gemmaArticleNeedsRepair(saved)) return { status: 'skipped', reason: 'ready' };
   const repairing = row.articleStatus === 'ready' && reusable && gemmaArticleNeedsRepair(saved);
+  // 进行中的旧稿接着用原来的要点格式。只有新开的整理，或显式重跑清掉进度之后，才写章节总结和对话。
+  const layout = reusable && saved.layout !== CHAPTER_DIALOGUE_LAYOUT ? 'legacy' : CHAPTER_DIALOGUE_LAYOUT;
   const deduped = dedupeRollingCaptions(source);
   const bounds = longVideoPartBounds();
   const loaded = reusable ? saved.parts.map((part) => loadGemmaPart(part)) : null;
@@ -618,9 +689,13 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   const state = {
     engine: 'gemma',
     hash,
+    layout: layout === CHAPTER_DIALOGUE_LAYOUT ? CHAPTER_DIALOGUE_LAYOUT : '',
     holdDay: reusable ? String(saved.holdDay || '') : '',
     holdReason: reusable ? String(saved.holdReason || '') : '',
     summary: reusable && !repairing ? String(saved.summary || '') : '',
+    chapterSummaries: reusable && layout === CHAPTER_DIALOGUE_LAYOUT && Array.isArray(saved.chapterSummaries)
+      ? saved.chapterSummaries
+      : [],
     summaryAttempts: reusable && !repairing ? Number(saved.summaryAttempts) || 0 : 0,
     summaryProvider: reusable && !repairing ? String(saved.summaryProvider || '') : '',
     summaryCalls: reusable && !repairing ? callCounts(saved.summaryCalls) : callCounts(),
@@ -721,8 +796,10 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     if (sectionStopped) return sectionStopped;
     try {
       touch();
-      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: GEMMA_SECTION_SYSTEM, prompt: slot.translation }));
-      slot.section = stripResidualEnglish(repairTimestampHeading(result.text, slot.start, slot.translation));
+      const sectionSystem = layout === CHAPTER_DIALOGUE_LAYOUT ? GEMMA_DIALOGUE_SYSTEM : GEMMA_SECTION_SYSTEM;
+      const result = await withUpstreamRetry(deps, () => callArticleModel(deps, { system: sectionSystem, prompt: slot.translation }));
+      const repaired = stripResidualEnglish(repairTimestampHeading(result.text, slot.start, slot.translation));
+      slot.section = layout === CHAPTER_DIALOGUE_LAYOUT ? stripDuplicateChapterTitles(repaired) : repaired;
       if (!slot.provider) slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
       slot.status = 'done';
@@ -731,6 +808,40 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     } catch (error) {
       return stop(slot, error);
     }
+  }
+  if (layout === CHAPTER_DIALOGUE_LAYOUT) {
+    if (!Array.isArray(state.chapterSummaries) || state.chapterSummaries.length !== state.parts.length) {
+      if (state.summaryAttempts >= PART_ATTEMPTS) {
+        state.holdDay = day;
+        state.holdReason = 'failed';
+        persist('pending');
+        return { status: 'pending', reason: 'failed' };
+      }
+      const summaryStopped = halted();
+      if (summaryStopped) return summaryStopped;
+      try {
+        touch();
+        const result = await withUpstreamRetry(deps, () => callChapterSummaries(deps, state.parts.map((part) => part.section)));
+        state.chapterSummaries = result.summaries;
+        state.summaryProvider = result.provider;
+        addCalls(state.summaryCalls, result.calls);
+        state.summaryAttempts = 0;
+        persist('pending');
+      } catch (error) {
+        return stop(null, error);
+      }
+    }
+    const article = joinChapterDialogue(state.parts.map((part) => part.section), state.chapterSummaries);
+    if (!article) {
+      state.holdDay = day;
+      state.holdReason = 'failed';
+      persist('pending');
+      return { status: 'pending', reason: 'failed' };
+    }
+    return finishArticle(
+      { ...deps, signal },
+      { row, repository, feedRepository, workspaceId, article, state, persist },
+    );
   }
   if (!state.summary) {
     if (state.summaryAttempts >= PART_ATTEMPTS) {
@@ -912,6 +1023,34 @@ export async function runYoutubeArticlePass(deps = {}) {
 
 export async function organizeGemmaTranscript(input) {
   return organizeWithGemma(input);
+}
+
+export function queueYoutubeChapterRerun({ repository, workspaceId = 'local', videoId = '', all = false, dryRun = false } = {}) {
+  if (!repository) return { queued: [], missing: Boolean(videoId) };
+  const wanted = String(videoId || '').trim();
+  const rows = repository.listEpisodes(workspaceId).filter((row) => {
+    if (row.status !== 'ready' || row.articleStatus !== 'ready') return false;
+    if (wanted) return row.videoId === wanted;
+    return all;
+  });
+  const queued = [];
+  for (const row of rows) {
+    if (!dryRun) {
+      repository.saveEpisode(episodePatch(row, workspaceId, {
+        articleStatus: 'pending',
+        articleDay: '',
+        articleState: JSON.stringify({
+          engine: 'gemma',
+          layout: CHAPTER_DIALOGUE_LAYOUT,
+          rerun: true,
+          hash: '',
+          parts: [],
+        }),
+      }));
+    }
+    queued.push(row.videoId);
+  }
+  return { queued, missing: Boolean(wanted) && queued.length === 0 };
 }
 
 export async function resumeArticleTitle(input) {

@@ -1,6 +1,8 @@
 import {
   dedupeRollingCaptions,
+  CHAPTER_SUMMARY_SYSTEM,
   GEMMA_ARTICLE_TITLE_SYSTEM,
+  GEMMA_DIALOGUE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
@@ -54,8 +56,8 @@ export function longVideoCallBudget(system, prompt) {
   const text = String(prompt || '');
   const chars = [...text].length;
   let outputTokens = Math.max(1, chars);
-  if (system === GEMMA_SECTION_SYSTEM) outputTokens = chars + 64;
-  else if (system === GEMMA_SUMMARY_SYSTEM) outputTokens = 1024;
+  if (system === GEMMA_SECTION_SYSTEM || system === GEMMA_DIALOGUE_SYSTEM) outputTokens = chars + 64;
+  else if (system === GEMMA_SUMMARY_SYSTEM || system === CHAPTER_SUMMARY_SYSTEM) outputTokens = system === CHAPTER_SUMMARY_SYSTEM ? 4096 : 1024;
   else if (system === GEMMA_ARTICLE_TITLE_SYSTEM) outputTokens = 64;
   return gemmaRequestBudget(system, text, outputTokens);
 }
@@ -65,7 +67,8 @@ function chunkFits(chars) {
   const translate = gemmaRequestBudget(GEMMA_TRANSLATE_SYSTEM, source, chars);
   const chinese = '字'.repeat(chars);
   const section = gemmaRequestBudget(GEMMA_SECTION_SYSTEM, chinese, chars + 64);
-  return translate.fits && section.fits;
+  const dialogue = gemmaRequestBudget(GEMMA_DIALOGUE_SYSTEM, chinese, chars + 64);
+  return translate.fits && section.fits && dialogue.fits;
 }
 
 let cachedBounds;

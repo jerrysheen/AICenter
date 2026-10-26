@@ -20,7 +20,9 @@ import {
   longVideoPartBounds,
 } from '../packages/domain/src/gemma-long-video.js';
 import {
+  CHAPTER_SUMMARY_SYSTEM,
   GEMMA_ARTICLE_TITLE_SYSTEM,
+  GEMMA_DIALOGUE_SYSTEM,
   GEMMA_SECTION_SYSTEM,
   GEMMA_SUMMARY_SYSTEM,
   GEMMA_TRANSLATE_SYSTEM,
@@ -194,8 +196,8 @@ test('youtube and x article calls pass the token budget and keep the title on 26
     async generate(input) {
       calls.push(input);
       if (input.system === GEMMA_TRANSLATE_SYSTEM) return { text: '主持人：利率会差 24%，NVDA 仍在讨论。' };
-      if (input.system === GEMMA_SECTION_SYSTEM) return { text: '## 利率（00:00:03）\n\n主持人：利率会差 24%，NVDA 仍在讨论。' };
-      if (input.system === GEMMA_SUMMARY_SYSTEM) return { text: '## 要点\n\n- 利率会差 24%。' };
+      if (input.system === GEMMA_DIALOGUE_SYSTEM) return { text: '## 利率（00:00:03）\n\n**主持人**：利率会差 24%，NVDA 仍在讨论。' };
+      if (input.system === CHAPTER_SUMMARY_SYSTEM) return { text: '[{"oneLiner":"利率会差 24%。","bullets":["NVDA 仍在讨论"]}]' };
       if (input.system === GEMMA_ARTICLE_TITLE_SYSTEM) return { text: '利率路径仍在左右仓位' };
       throw new Error('意外的提示');
     },
@@ -232,13 +234,14 @@ test('youtube and x article calls pass the token budget and keep the title on 26
       workspaceId: 'local',
       now: Date.parse('2026-10-21T02:00:00Z'),
       gemmaRouter,
+      flashGenerate: null,
       quotaRepository: {},
     });
     assert.equal(result.ready, 1);
     assert.deepEqual(calls.map((call) => call.system), [
       GEMMA_TRANSLATE_SYSTEM,
-      GEMMA_SECTION_SYSTEM,
-      GEMMA_SUMMARY_SYSTEM,
+      GEMMA_DIALOGUE_SYSTEM,
+      CHAPTER_SUMMARY_SYSTEM,
       GEMMA_ARTICLE_TITLE_SYSTEM,
     ]);
     for (const call of calls.slice(0, 3)) {

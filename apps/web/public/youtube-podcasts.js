@@ -536,7 +536,8 @@ export function podcastExitAction(from = '') {
 }
 
 function podcastExitControl(onExit, label = '返回播客') {
-  const bar = el('div', 'reader-mobile-bar is-quad podcast-reader-exit');
+  const bar = el('div', 'reader-mobile-bar is-quad');
+  bar.dataset.podcastChrome = 'exit';
   bar.setAttribute('aria-label', '阅读操作');
   const button = el('button', 'is-back');
   button.type = 'button';
@@ -558,7 +559,7 @@ export function mountPodcastReaderExit(onExit = () => {}, root = null, label = '
   if (root && typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
   const body = typeof document !== 'undefined' ? document.body : null;
   if (!body || typeof body.append !== 'function') return null;
-  removePodcastChrome('.podcast-reader-exit');
+  removePodcastChrome('[data-podcast-chrome="exit"]');
   const bar = podcastExitControl(onExit, label);
   body.append(bar);
   return bar;
@@ -566,20 +567,26 @@ export function mountPodcastReaderExit(onExit = () => {}, root = null, label = '
 
 export function clearPodcastReaderChrome(root = null) {
   if (root && typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
-  removePodcastChrome('.podcast-reader-exit');
+  removePodcastChrome('[data-podcast-chrome="exit"]');
   removePodcastChrome('.podcast-reader-float');
+  removePodcastChrome('.podcast-toc-toggle');
+  removePodcastChrome('.podcast-toc-sheet');
 }
 
-function bindPodcastChrome(root, floatBar, flowBar, exitBar) {
+function bindPodcastChrome(root, floatBar, flowBar, exitBar, tocToggle = null, tocSheet = null) {
   const view = typeof window !== 'undefined' ? window : null;
   if (!view || typeof view.addEventListener !== 'function' || !floatBar) return;
   if (typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
   // 页壳有 overflow-x: clip，固定条放在 body 上才相对视口，而不是被滚走的页头带着走。
   removePodcastChrome('.podcast-reader-float', floatBar);
-  removePodcastChrome('.podcast-reader-exit', exitBar);
+  removePodcastChrome('[data-podcast-chrome="exit"]', exitBar);
+  removePodcastChrome('.podcast-toc-toggle', tocToggle);
+  removePodcastChrome('.podcast-toc-sheet', tocSheet);
   if (document.body && typeof document.body.append === 'function') {
     if (floatBar.parentElement !== document.body) document.body.append(floatBar);
     if (exitBar && exitBar.parentElement !== document.body) document.body.append(exitBar);
+    if (tocToggle && tocToggle.parentElement !== document.body) document.body.append(tocToggle);
+    if (tocSheet && tocSheet.parentElement !== document.body) document.body.append(tocSheet);
   }
   let lastY = Number(view.scrollY) || 0;
   let shown = false;
@@ -591,6 +598,8 @@ function bindPodcastChrome(root, floatBar, flowBar, exitBar) {
     observer?.disconnect();
     if (typeof floatBar.remove === 'function') floatBar.remove();
     if (exitBar && typeof exitBar.remove === 'function') exitBar.remove();
+    if (tocToggle && typeof tocToggle.remove === 'function') tocToggle.remove();
+    if (tocSheet && typeof tocSheet.remove === 'function') tocSheet.remove();
     if (root._podcastScrollCleanup === release) root._podcastScrollCleanup = null;
   };
   const apply = () => {
@@ -601,6 +610,9 @@ function bindPodcastChrome(root, floatBar, flowBar, exitBar) {
     }
     const y = Number(view.scrollY) || 0;
     const gate = Math.max(72, Number(flowBar?.offsetHeight) || 0);
+    if (document.documentElement?.style?.setProperty) {
+      document.documentElement.style.setProperty('--podcast-reader-bar', `${gate}px`);
+    }
     shown = podcastReaderFloatVisibility({
       previousY: lastY,
       nextY: y,
@@ -642,6 +654,135 @@ function readerTabs(reading, onMode, className) {
     readerTab('全文', reading === 'full', () => onMode('full')),
   );
   return tabs;
+}
+
+const TOC_LABELS = new Set(['章节总结', '对话']);
+
+function plainHeadingText(value) {
+  return String(value || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 正文 Markdown 的 # / ## / ### 会渲染成 h2 / h3 / h4。目录按渲染结果收集，跳过每章重复的「章节总结」「对话」。
+export function podcastTocEntriesFromHtml(html) {
+  const entries = [];
+  const pattern = /<h([2-4])([^>]*)>([\s\S]*?)<\/h\1>/gi;
+  for (const match of String(html || '').matchAll(pattern)) {
+    const text = plainHeadingText(match[3]);
+    if (text && !TOC_LABELS.has(text)) {
+      entries.push({ id: `podcast-toc-${entries.length}`, level: Number(match[1]), text });
+    }
+  }
+  return entries.length >= 2 ? entries : [];
+}
+
+function tocOpen(node, open) {
+  if (!node) return false;
+  if (node.classList?.toggle) {
+    node.classList.toggle('is-open', open);
+    return node.classList.contains('is-open');
+  }
+  const names = String(node.className || '').split(/\s+/).filter((item) => item && item !== 'is-open');
+  if (open) names.push('is-open');
+  node.className = names.join(' ');
+  return open;
+}
+
+function podcastTocEntries(article) {
+  if (article && typeof article.querySelectorAll === 'function') {
+    const nodes = [...article.querySelectorAll('h2, h3, h4')];
+    const entries = [];
+    for (const node of nodes) {
+      const text = plainHeadingText(node.textContent || '');
+      if (!text || TOC_LABELS.has(text)) continue;
+      const id = `podcast-toc-${entries.length}`;
+      if (typeof node.setAttribute === 'function') node.setAttribute('id', id);
+      else node.id = id;
+      entries.push({ id, level: Number(String(node.tagName || '').replace(/\D/g, '')) || 3, text });
+    }
+    if (entries.length >= 2) return entries;
+    if (nodes.length) return [];
+  }
+  return podcastTocEntriesFromHtml(article?.innerHTML || '');
+}
+
+export function jumpToPodcastHeading(id) {
+  const node = typeof document !== 'undefined' && typeof document.getElementById === 'function'
+    ? document.getElementById(id)
+    : null;
+  if (!node || typeof node.scrollIntoView !== 'function') return false;
+  node.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  return true;
+}
+
+function tocList(entries, onPick) {
+  const list = el('ol', 'podcast-toc-list');
+  for (const entry of entries) {
+    const item = el('li', entry.level >= 4 ? 'is-sub' : '');
+    const button = el('button', 'podcast-toc-link', entry.text);
+    button.type = 'button';
+    button.dataset.tocId = entry.id;
+    button.addEventListener('click', () => onPick(entry.id, button));
+    item.append(button);
+    list.append(item);
+  }
+  return list;
+}
+
+function markTocCurrent(id) {
+  if (typeof document.querySelectorAll !== 'function') return;
+  for (const button of document.querySelectorAll('.podcast-toc-link')) {
+    if (button.dataset?.tocId === id) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute?.('aria-current');
+  }
+}
+
+function buildPodcastToc(article) {
+  const entries = podcastTocEntries(article);
+  if (!entries.length) return null;
+  const setSheet = (open) => {
+    tocOpen(sheet, open);
+    sheet?.setAttribute?.('aria-hidden', open ? 'false' : 'true');
+    toggle?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  const pick = (id) => {
+    jumpToPodcastHeading(id);
+    markTocCurrent(id);
+    setSheet(false);
+  };
+  const nav = el('nav', 'podcast-toc');
+  nav.setAttribute('aria-label', '章节目录');
+  nav.append(el('p', 'podcast-toc-label', '目录'), tocList(entries, pick));
+  const toggle = el('button', 'podcast-toc-toggle', '目录');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.setAttribute('aria-controls', 'podcast-toc-sheet');
+  const sheet = el('div', 'podcast-toc-sheet');
+  sheet.id = 'podcast-toc-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-label', '章节目录');
+  sheet.setAttribute('aria-hidden', 'true');
+  const panel = el('div', 'podcast-toc-panel');
+  const close = el('button', 'podcast-toc-close', '关闭');
+  close.type = 'button';
+  const shut = () => setSheet(false);
+  close.addEventListener('click', shut);
+  sheet.addEventListener('click', (event) => {
+    if (event.target === sheet) shut();
+  });
+  panel.append(close, tocList(entries, pick));
+  sheet.append(panel);
+  toggle.addEventListener('click', () => {
+    const hidden = typeof sheet.getAttribute === 'function' ? sheet.getAttribute('aria-hidden') : sheet['aria-hidden'];
+    setSheet(hidden !== 'false');
+  });
+  return { nav, toggle, sheet };
 }
 
 export function renderPodcastReader(root, {
@@ -701,10 +842,20 @@ export function renderPodcastReader(root, {
   body.dataset.readerPane = reading;
   if (reading === 'speed') fillSpeedRead(body, episode, () => onMode('full'));
   else fillFullArticle(body, episode);
+  const toc = reading === 'full' ? buildPodcastToc(body.querySelector?.('.podcast-article') || findPodcastArticle(body)) : null;
+  const layout = el('div', 'podcast-reader-layout');
+  if (toc?.nav) layout.append(toc.nav);
+  layout.append(body);
   const exitBar = podcastExitControl(onExit || onBack, exitLabel);
-  article.append(bar, body, floatBar, exitBar);
+  article.append(bar, layout, floatBar, exitBar);
+  if (toc?.toggle) article.append(toc.toggle, toc.sheet);
   root.append(article);
-  bindPodcastChrome(root, floatBar, bar, exitBar);
+  bindPodcastChrome(root, floatBar, bar, exitBar, toc?.toggle || null, toc?.sheet || null);
+}
+
+function findPodcastArticle(body) {
+  const nested = body?.children || [];
+  return nested.find((node) => String(node.className || '').split(' ').includes('podcast-article')) || null;
 }
 
 function markPodcastKeypoints(article) {
