@@ -42,6 +42,7 @@ import {
   GEMMA_SEGMENT_SYSTEM,
   LONG_VIDEO_GEMMA_SCHEDULE,
   PARALLEL_SEGMENT_LAYOUT,
+  PROSE_SEGMENT_KIND,
   chaptersCoverParts,
   fallbackEpisodeChapters,
   longVideoCallBudget,
@@ -51,6 +52,7 @@ import {
   parallelSegmentConcurrency,
   parseEpisodeStructure,
   parseSegmentTranslation,
+  resolvePodcastMergeRequest,
   segmentTranslationOk,
   splitSummaryBlocks,
   structureMaterialBatches,
@@ -58,9 +60,11 @@ import {
 } from '../../domain/src/gemma-long-video.js';
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
-// 新开的整理：按段并行 Gemma 26B（译文 + hint + topic），再由 Flash Lite 一次写整集脉络，最后把 partIds 映回全文。
-// Flash 日额度紧或失败时，脉络改由 Gemma 26B 写。已经落库的 ready 不自动重写。
-// 进行中的旧要点稿仍接着写小节。豆包只在引擎显式写成 doubao 时使用。
+// 新开的整理：按段并行 Gemma 26B 写提炼正文（附 hint、topic）。Flash Lite 只切一次章。
+// 合并策略见 podcast-article-merge.js。默认把各段正文按章接上。未就绪的策略不会多打一轮。
+// Flash 额度紧或失败时，切章改由 Gemma 26B。已经 ready 的 parallel-segments 和 chapter-dialogue 不自动重写。
+// 进行中的旧要点稿仍接着写小节。段上还不是提炼正文的，丢掉旧译文，用一次提炼重写，不在译文上再改写。
+// 豆包只在引擎显式写成 doubao 时使用。
 // 标题和关键句的中文化仍只用 Gemma，不走 Flash。
 // 正文整理完成后，再用 Gemma 按中文正文写一句话标题；失败就留着原来的标题。
 
@@ -294,7 +298,26 @@ function loadGemmaPart(part) {
     calls: callCounts(part?.calls),
     hint: Array.isArray(part?.hint) ? part.hint.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5) : [],
     topic: String(part?.topic || '').trim().slice(0, 40),
+    segmentKind: part?.segmentKind === PROSE_SEGMENT_KIND ? PROSE_SEGMENT_KIND : '',
     dropped,
+  };
+}
+
+// 旧的忠实译文不能当成新正文。清掉后这一段只再打一次提炼，不先译再改。
+function reuseProsePart(part) {
+  if (part?.segmentKind === PROSE_SEGMENT_KIND && part.translation) return part;
+  if (!part?.translation) return part;
+  return {
+    ...part,
+    translation: '',
+    section: '',
+    hint: [],
+    topic: '',
+    status: 'pending',
+    attempts: 0,
+    provider: '',
+    segmentKind: '',
+    dropped: true,
   };
 }
 
@@ -650,24 +673,18 @@ async function organizeEpisode({ row, client, repository, feedRepository, worksp
 async function organizeParallelSegments({ state, deps, signal, day, row, repairing, persist, touch, pause, halted, stop }) {
   const status = repairing ? 'ready' : 'pending';
   for (const slot of state.parts) {
-    if (slot.translation) continue;
+    if (slot.translation && slot.segmentKind === PROSE_SEGMENT_KIND) continue;
+    if (slot.translation) slot.translation = '';
     if (slot.attempts >= PART_ATTEMPTS) {
       state.holdDay = day;
       state.holdReason = 'failed';
       persist(status);
       return { status: 'pending', reason: 'failed' };
     }
-    if (captionAlreadyChinese(slot.text)) {
-      slot.translation = slot.text;
-      slot.provider = slot.provider || 'source';
-      slot.status = 'translated';
-      slot.attempts = 0;
-      persist(status);
-    }
   }
   const concurrency = podcastSegmentConcurrency(deps.env || process.env);
   const translateSlot = async (slot) => {
-    if (slot.translation || signal?.aborted) return;
+    if ((slot.translation && slot.segmentKind === PROSE_SEGMENT_KIND) || signal?.aborted) return;
     const stopped = halted();
     if (stopped) return;
     try {
@@ -685,10 +702,11 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
       ));
       const parsed = parseSegmentTranslation(result.text);
       const zh = stripResidualEnglish(parsed.zh);
-      if (!segmentTranslationOk(zh)) throw new Error('分段译文不完整');
+      if (!segmentTranslationOk(zh)) throw new Error('分段正文不完整');
       slot.translation = zh;
       slot.hint = parsed.hint;
       slot.topic = parsed.topic;
+      slot.segmentKind = PROSE_SEGMENT_KIND;
       slot.provider = result.provider;
       addCalls(slot.calls, result.calls);
       slot.status = 'translated';
@@ -701,7 +719,7 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
       slot._error = error;
     }
   };
-  const pending = () => state.parts.filter((slot) => !slot.translation);
+  const pending = () => state.parts.filter((slot) => !(slot.translation && slot.segmentKind === PROSE_SEGMENT_KIND));
   await mapPool(pending(), concurrency, translateSlot);
   if (signal?.aborted) return pause('deadline');
   const succeeded = state.parts.some((slot) => slot.translation);
@@ -749,7 +767,7 @@ async function callEpisodeStructure(deps, parts, title) {
       calls[provider] += 1;
       const result = await generate({ system: EPISODE_STRUCTURE_SYSTEM, prompt: structurePrompt(batch, title) });
       const parsed = parseEpisodeStructure(result?.text);
-      if (!parsed?.chapters?.length) throw new Error('整集脉络不是完整 JSON');
+      if (!parsed?.chapters?.length) throw new Error('章节划分不是完整 JSON');
       if (parsed.titleZh) titleZh = parsed.titleZh;
       chapters.push(...parsed.chapters);
     }
@@ -783,7 +801,7 @@ async function callEpisodeStructure(deps, parts, title) {
   const chapters = parsed
     ? normalizeEpisodeChapters(parsed.chapters, parts.length)
     : fallbackEpisodeChapters(parts);
-  if (!chapters.length) throw attachCalls(new Error('整集脉络为空'), calls);
+  if (!chapters.length) throw attachCalls(new Error('章节划分为空'), calls);
   return { chapters, provider: provider || 'fallback', calls, titleZh: parsed?.titleZh || '' };
 }
 
@@ -795,17 +813,20 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
   const saved = readState(row.articleState);
   const reusable = saved?.engine === 'gemma' && saved.hash === hash && Array.isArray(saved.parts) && saved.parts.length;
   const savedLayout = String(saved?.layout || '');
-  // 已经落库的章节对话稿不自动换成新格式。缺段修复只留给旧要点稿和本路径自己的稿。
-  if (row.articleStatus === 'ready' && reusable && savedLayout === CHAPTER_DIALOGUE_LAYOUT) return { status: 'skipped', reason: 'ready' };
+  // 已经 ready 的并行稿和章节对话稿不自动换成新正文。缺段修复只留给还在写的旧要点稿。
+  const frozenLayout = savedLayout === PARALLEL_SEGMENT_LAYOUT || savedLayout === CHAPTER_DIALOGUE_LAYOUT;
+  if (row.articleStatus === 'ready' && reusable && frozenLayout) return { status: 'skipped', reason: 'ready' };
   if (row.articleStatus === 'ready' && reusable && !gemmaArticleNeedsRepair(saved)) return { status: 'skipped', reason: 'ready' };
   const repairing = row.articleStatus === 'ready' && reusable && gemmaArticleNeedsRepair(saved);
   // 进行中的旧要点稿接着写小节。新开的整理、显式重跑，以及还没写完的章节对话，都走并行分段。
   const useParallel = !reusable || savedLayout === PARALLEL_SEGMENT_LAYOUT || savedLayout === CHAPTER_DIALOGUE_LAYOUT;
+  const mergeRequest = resolvePodcastMergeRequest(deps.env || process.env);
   const deduped = dedupeRollingCaptions(source);
   const bounds = longVideoPartBounds();
   const loaded = reusable ? saved.parts.map((part) => loadGemmaPart(part)) : null;
-  const parts = loaded
-    ? loaded.map(({ dropped, ...part }) => part)
+  const prepared = loaded?.map((part) => (useParallel ? reuseProsePart(part) : part));
+  const parts = prepared
+    ? prepared.map(({ dropped, ...part }) => part)
     : splitTranscriptParts(deduped, bounds).map((part) => ({
       text: part.text,
       start: part.start || '',
@@ -814,11 +835,12 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       section: '',
       hint: [],
       topic: '',
+      segmentKind: '',
       attempts: 0,
       provider: '',
       calls: callCounts(),
     }));
-  const freshParallel = useParallel && (!reusable || savedLayout !== PARALLEL_SEGMENT_LAYOUT || loaded?.some((part) => part.dropped));
+  const freshParallel = useParallel && (!reusable || savedLayout !== PARALLEL_SEGMENT_LAYOUT || prepared?.some((part) => part.dropped));
   const state = {
     engine: 'gemma',
     hash,
@@ -827,6 +849,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     holdReason: reusable ? String(saved.holdReason || '') : '',
     summary: reusable && !repairing && !useParallel ? String(saved.summary || '') : '',
     chapters: freshParallel || !Array.isArray(saved?.chapters) ? [] : saved.chapters,
+    mergeStrategy: useParallel ? mergeRequest.plan.id : String(saved?.mergeStrategy || ''),
+    mergeRequested: useParallel && mergeRequest.pending ? mergeRequest.requested : '',
     chapterSummaries: [],
     summaryAttempts: reusable && !repairing && !freshParallel ? Number(saved.summaryAttempts) || 0 : 0,
     summaryProvider: reusable && !repairing && !freshParallel ? String(saved.summaryProvider || '') : '',
@@ -899,7 +923,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
       stop,
     });
     if (parallelResult) return parallelResult;
-    const article = mergeParallelArticle(state.parts, state.chapters);
+    // 模型侧只接了切章。polish / compile 还在试跑，这里不要按策略再打一轮。
+    const article = mergeParallelArticle(state.parts, state.chapters, state.mergeStrategy);
     if (!article) {
       state.holdDay = day;
       state.holdReason = 'failed';
@@ -1077,11 +1102,13 @@ export async function runYoutubeArticlePass(deps = {}) {
       if (saved.holdReason === 'daily-limit') stats.dailyLimit += 1;
       continue;
     }
-    if (row.articleStatus === 'ready' && saved?.layout === CHAPTER_DIALOGUE_LAYOUT && saved?.titleStatus !== 'pending') {
+    const frozenReady = row.articleStatus === 'ready'
+      && (saved?.layout === CHAPTER_DIALOGUE_LAYOUT || saved?.layout === PARALLEL_SEGMENT_LAYOUT);
+    if (frozenReady && saved?.titleStatus !== 'pending') {
       stats.skipped += 1;
       continue;
     }
-    if (row.articleStatus === 'ready' && saved?.titleStatus === 'pending' && !(engine === 'gemma' && gemmaArticleNeedsRepair(saved))) {
+    if (row.articleStatus === 'ready' && saved?.titleStatus === 'pending' && (frozenReady || !(engine === 'gemma' && gemmaArticleNeedsRepair(saved)))) {
       try {
         const titled = await titlePendingArticle({ row, repository, feedRepository, workspaceId, deps });
         if (titled.stopPass) {
@@ -1094,7 +1121,7 @@ export async function runYoutubeArticlePass(deps = {}) {
       stats.skipped += 1;
       continue;
     }
-    if (row.articleStatus === 'ready' && (engine !== 'gemma' || !gemmaArticleNeedsRepair(saved))) {
+    if (frozenReady || (row.articleStatus === 'ready' && (engine !== 'gemma' || !gemmaArticleNeedsRepair(saved)))) {
       stats.skipped += 1;
       continue;
     }

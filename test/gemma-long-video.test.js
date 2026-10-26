@@ -294,7 +294,11 @@ test('structure partIds map back to full translations, not the excerpt', () => {
   assert.ok(merged.indexOf('后章') < merged.indexOf('前章'));
   assert.match(merged, /乙段全文要单独留下/);
   assert.match(merged, /甲{2000}全文结尾/);
-  assert.match(merged, /### 章节总结/);
+  assert.match(merged, /^## 后章/m);
+  assert.match(merged, /先讲乙/);
+  assert.equal(merged.includes('### 章节总结'), false);
+  assert.equal(merged.includes('- 乙要点'), false);
+  assert.ok(merged.indexOf('先讲乙') < merged.indexOf('乙段全文要单独留下'));
   const orphan = mergeParallelArticle(parts, normalizeEpisodeChapters([
     { title: '只收到第一段', partIds: [0], oneLiner: '甲', bullets: ['甲要点'] },
   ], 2));

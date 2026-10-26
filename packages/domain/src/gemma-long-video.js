@@ -112,30 +112,32 @@ function plannedSection(start) {
   return `## 主题（${clock}）\n${sentence.repeat(8)}`;
 }
 
-// 英文稿：每段一次翻译、一次分节，要点按 180 字摘录分批，最后一次标题。
-// 新整理：每段一次 Gemma 26B，同时给出译文、3～5 条 hint 和 topic。不排对话。
+// 英文稿的旧账：每段一次翻译、一次分节，要点按摘录分批，最后一次标题。只给 longVideoGemmaCalls 对照。
+// 新整理：每段一次 Gemma 26B，写出提炼正文，并附 hint、topic 供切章。不先译再改写。
 export const PARALLEL_SEGMENT_LAYOUT = 'parallel-segments';
+export const PROSE_SEGMENT_KIND = 'prose';
 export const SEGMENT_EXCERPT_CHARS = 1800;
 export const STRUCTURE_PROMPT_CHARS = 80000;
 
-export const GEMMA_SEGMENT_SYSTEM = `你同时完成两件事：1) 把英文播客字幕忠实译成简体中文；2) 附带本段的轻量总结 hint。
+export const GEMMA_SEGMENT_SYSTEM = `你把一段播客字幕写成通顺的简体中文正文。这是给读者直接读的叙述，不是逐句翻译，也不是几条摘要。
 
 规则：
 - 只返回一个 JSON 对象，不要解释、不要 Markdown 围栏。
-- 格式：{"zh":"中文译文","hint":["要点1","要点2","要点3"],"topic":"本段中文主题"}
-- 翻译要忠实、通顺；人名、公司、股票代码和数字保留；不要逐条滚动字幕各译一行。
-- 时间戳只在段落开头保留一次（如有）。
-- hint 写 3 到 5 条，每条不超过 28 个字，写结论、数字或立场。
+- 格式：{"zh":"正文","hint":["要点1","要点2","要点3"],"topic":"本段主题"}
+- zh 写成一段或数段连贯叙述：写出观点、因果和立场。关键数字、人名、公司、股票代码和重要论据写进正文。值得留下的原话可以短引。
+- 去掉口头禅、重复和字幕碎句。不要逐条滚动字幕各写一行，不要写成「主持人：」墙，不要加 ## 标题。
+- hint 写 3 到 5 条，每条不超过 28 个字，只给后面切章用，写结论、数字或立场。
 - topic 是本段主题短名，不超过 20 个字。`;
 
-export const EPISODE_STRUCTURE_SYSTEM = `你是中文财经播客主编。根据各段译文摘录与 hint，为整集划分章节，并写每章短总结。
+export const EPISODE_STRUCTURE_SYSTEM = `你是中文财经播客主编。根据各段正文摘录和 hint，只为整集划分章节。不要重写正文，不要写章节总结。
 只输出一个 JSON 对象，不要 Markdown 围栏。格式：
-{"titleZh":"整集中文标题","chapters":[{"title":"章节中文标题","start":"HH:MM:SS","partIds":[0,1],"oneLiner":"一句话结论","bullets":["要点"]}]}
+{"titleZh":"整集中文标题","chapters":[{"title":"章节中文标题","start":"HH:MM:SS","partIds":[0,1],"oneLiner":""}]}
 规则：
 - chapters 按时间顺序。partIds 使用材料里的 i，覆盖全部段落且不重叠，每段恰好属于一章。
 - 相邻主题可以并成一章。不要为了凑数把每一段都拆成一章。
-- oneLiner 不超过 40 个字。bullets 写 3 到 5 条，每条不超过 36 个字，写结论、数字或立场。
-- 简体中文。不要写对话。`;
+- title 是章名。start 用材料里已有的时间，没有就留空字符串。
+- oneLiner 可选，不超过 40 个字，是这一章的一行导语，和正文同一密度。不需要就留空字符串。
+- 简体中文。不要输出列表，不要写对话。`;
 
 export function parallelSegmentConcurrency({ keyCount = 0, perKey = 2, cap = 8 } = {}) {
   const limit = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.min(32, Math.floor(Number(cap))) : 8;
@@ -314,30 +316,14 @@ export function chaptersCoverParts(chapters, partCount) {
   return true;
 }
 
-export function mergeParallelArticle(parts, chapters) {
-  const list = Array.isArray(parts) ? parts : [];
-  const blocks = [];
-  (Array.isArray(chapters) ? chapters : []).forEach((chapter, index) => {
-    const title = String(chapter?.title || '').trim() || `第 ${index + 1} 章`;
-    const heading = /^#{1,6}\s/.test(title) ? title : `## ${title}`;
-    const lines = [heading, ''];
-    const oneLiner = String(chapter?.oneLiner || '').trim();
-    const bullets = cleanHintList(chapter?.bullets, 6);
-    if (oneLiner || bullets.length) {
-      lines.push('### 章节总结', '');
-      if (oneLiner) lines.push(`**一句话：** ${oneLiner}`, '');
-      for (const bullet of bullets) lines.push(`- ${bullet}`);
-      lines.push('');
-    }
-    for (const id of chapter?.partIds || []) {
-      const text = String(list[id]?.translation || '').trim();
-      if (text) lines.push(text, '');
-    }
-    const block = lines.join('\n').trim();
-    if (block) blocks.push(block);
-  });
-  return blocks.join('\n\n').trim();
-}
+export {
+  MERGE_CHAPTER_CONCAT,
+  MERGE_FLASH_POLISH,
+  MERGE_POINT_COMPILE,
+  mergeParallelArticle,
+  podcastMergePlan,
+  resolvePodcastMergeRequest,
+} from './podcast-article-merge.js';
 
 export function longVideoGemmaCalls(text, bounds = longVideoPartBounds()) {
   const parts = splitTranscriptParts(dedupeRollingCaptions(text), bounds);
