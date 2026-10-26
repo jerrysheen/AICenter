@@ -371,6 +371,12 @@ test('hourly editions use the same edition-or-attempt choice as the brief', () =
     ],
   });
   assert.deepEqual(editions.map((item) => item.id), ['attempt', 'published']);
+  const readingOnly = hourlyEditions({hours: [{edition: published}]}, {
+    [hour * 3]: {id: 'rh:only', status: 'ready', startAt: hour * 3, endAt: hour * 4, headline: '只有阅读稿'},
+    [hour]: {missing: true, startAt: hour},
+  });
+  assert.deepEqual(readingOnly.map((item) => item.id), ['rh:only', 'published']);
+  assert.deepEqual(readingOnly[0].window, {startAt: hour * 3, endAt: hour * 4});
 });
 
 test('the newest loaded hour stays visible even when it has no hits', () => {

@@ -72,32 +72,43 @@ export function hourHasNewMaterial(attempt, nodes, lookup) {
   return !editionCoversMaterials(attempt, nodes, lookup);
 }
 
-// Older due hours fill the cap first. The latest ended hour only uses a slot that is still free,
-// so a failing current hour cannot keep 10:00 and 11:00 off the queue.
+// Older due failures fill the cap first. Hours in the same window with no saved
+// head use whatever slots remain. The latest ended hour only uses a slot that is
+// still free, so a failing current hour cannot keep 10:00 and 11:00 off the queue.
 // A failed attempt that does not cover the current nodes is still due. The prepare path
 // queues only the newest hour, so treating that gap as "new material" left a middle hour
-// off both paths.
+// off both paths. A restart that dies before publish leaves no attempt, and that hole
+// was invisible to this scan.
 export function dueFailedHourCatchupPlan({at, rows = [], openHourStarts = new Set(), limit = 2, windowHours = 24} = {}) {
   const cap = Number.isInteger(limit) && limit >= 1 && limit <= 4 ? limit : 2;
   const span = Number.isInteger(windowHours) && windowHours >= 1 && windowHours <= 24 ? windowHours : 24;
   if (!Number.isFinite(at)) return [];
   const latest = Math.floor(at / HOUR) * HOUR - HOUR;
   const oldest = latest - (span - 1) * HOUR;
-  const older = [];
-  let current = false;
+  const olderDue = [];
+  const olderMissing = [];
+  let currentDue = false;
+  let currentMissing = false;
   const seen = new Set();
   for (const row of rows) {
     const hourStart = Number(row?.hourStart);
     if (!Number.isFinite(hourStart) || hourStart > latest || hourStart < oldest || seen.has(hourStart)) continue;
     seen.add(hourStart);
     if (openHourStarts.has(hourStart)) continue;
-    if (!attemptRetryDue(row.attempt, at)) continue;
-    if (hourStart === latest) current = true;
-    else older.push(hourStart);
+    const due = attemptRetryDue(row.attempt, at);
+    const missing = row.missing === true && !due;
+    if (!due && !missing) continue;
+    if (hourStart === latest) {
+      if (due) currentDue = true;
+      else currentMissing = true;
+    } else if (due) olderDue.push(hourStart);
+    else olderMissing.push(hourStart);
   }
-  older.sort((a, b) => a - b);
-  const selected = older.slice(0, cap);
-  if (current && selected.length < cap) selected.push(latest);
+  olderDue.sort((a, b) => a - b);
+  olderMissing.sort((a, b) => a - b);
+  const selected = [...olderDue, ...olderMissing].slice(0, cap);
+  if (selected.length < cap && currentDue) selected.push(latest);
+  else if (selected.length < cap && currentMissing) selected.push(latest);
   return selected.map((hourStart) => ({hourStart, priority: hourStart === latest ? 0 : -1}));
 }
 
@@ -109,11 +120,17 @@ export function enqueueDueFailedHourRefreshes(store, service, workspaceId = 'loc
   const listed = service.list(workspaceId, {startAt: oldest, endAt: latest + HOUR}) || {};
   const slots = Array.isArray(listed.hours) ? listed.hours : [];
   const rows = [];
+  const present = new Set();
   for (const slot of slots) {
     const attempt = slot?.attempt;
-    const hourStart = Number(attempt?.window?.startAt);
+    const edition = slot?.edition;
+    const hourStart = Number(attempt?.window?.startAt ?? edition?.window?.startAt);
     if (!Number.isFinite(hourStart)) continue;
-    rows.push({hourStart, attempt});
+    present.add(hourStart);
+    if (attempt) rows.push({hourStart, attempt});
+  }
+  for (let hour = oldest; hour <= latest; hour += HOUR) {
+    if (!present.has(hour)) rows.push({hourStart: hour, missing: true});
   }
   const openJobs = hourlyWorkspaceJobs(store, workspaceId);
   const covered = hourlyRetryLaneHourStarts(openJobs);

@@ -328,6 +328,47 @@ test('daily catch-up waits until the run minute and skips a published edition', 
   }
 });
 
+test('a lease interrupt requeues hourly extract and a runtime cap does not refund it', () => {
+  const store = createStore(':memory:');
+  try {
+    const hourStart = Math.floor(Date.now() / H) * H;
+    const job = store.createJob({
+      type: 'report.hourly.extract',
+      workspaceId: 'local',
+      maxAttempts: 2,
+      input: {workspaceId: 'local', hourStart},
+    });
+    const claimed = store.claimNextJob('worker-1', ['report.hourly.extract']);
+    assert.equal(claimed.id, job.id);
+    assert.equal(store.recoverStaleJobs(1, claimed.lockedAt + 5), 1);
+    const current = store.getJob(job.id);
+    assert.equal(current.status, 'queued');
+    assert.equal(current.attemptCount, 1);
+    assert.equal(current.maxAttempts, 3);
+    assert.equal(current.error.name, 'WorkerLeaseExpired');
+    const again = store.claimNextJob('worker-2', ['report.hourly.extract']);
+    assert.equal(again.attemptCount, 2);
+    assert.equal(store.recoverStaleJobs(1, again.lockedAt + 5), 1);
+    const refunded = store.getJob(job.id);
+    assert.equal(refunded.status, 'queued');
+    assert.equal(refunded.attemptCount, 2);
+    assert.equal(refunded.maxAttempts, 4);
+    assert.equal(refunded.error.name, 'WorkerLeaseExpired');
+    const running = store.claimNextJob('worker-3', ['report.hourly.extract']);
+    assert.equal(running.id, job.id);
+    assert.equal(running.attemptCount, 3);
+    assert.equal(store.recoverStaleJobs(10 * 60_000, Date.now() + 60_000, {
+      maxRunningMsByType: {'report.hourly.extract': 30_000},
+    }), 1);
+    const failed = store.getJob(job.id);
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.error.name, 'WorkerRunTimeout');
+    assert.equal(failed.maxAttempts, 4);
+  } finally {
+    store.close();
+  }
+});
+
 test('a heartbeating job past its runtime is failed and the same queue can be claimed', async () => {
   const temporary = temporaryDatabase('ai-center-runtime-cap-');
   const store = createStore(temporary.path);

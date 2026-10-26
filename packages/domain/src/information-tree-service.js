@@ -4,7 +4,7 @@ import {materialHash,materialHashYielding,prepareDailyMaterials} from './daily-m
 import {yieldEventLoop} from './event-loop.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,hourlyModelQueueTimeoutMs,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,hourlyModelQueueTimeoutMs,hourlyCatchupBudgetMs,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
@@ -242,6 +242,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   const validatorVersion=articleStrategy ? ARTICLE_VALIDATOR_VERSION : TREE_VALIDATOR_VERSION;
   const config={articleRequestBytes:100000,batchBytes:12000,maxCalls:80,totalMs:20*60000,timeoutMs:180000,dailyTimeoutMs:360000,dailyTotalMs:60*60000,queueTimeoutMs:120000,...budget};
   const hourlyQueueTimeoutMs=hourlyModelQueueTimeoutMs(config);
+  const catchupBudgetMs=hourlyCatchupBudgetMs(config);
   let hourlyTail=Promise.resolve();
   function enterHourlyModel(work) {
     const run=hourlyTail.then(work, work);
@@ -765,7 +766,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     if(mode==='rewrite' || snapshotId)throw new Error('历史稿重编请使用legacy；浓缩树不把旧事实底稿当作单篇信息');
     const latest=Math.floor(now()/HOUR)*HOUR-HOUR;
     if(hourStart!==undefined) return [await generateHour({workspaceId,hourStart,retryTransient:mode==='resume',priority:hourStart===latest ? 10 : -10,
-      ...(hourStart!==latest ? {totalMs:8*60000} : {})})];
+      ...(hourStart!==latest ? {totalMs:catchupBudgetMs} : {})})];
     const result=[await generateHour({workspaceId,hourStart:latest})];
     // Reuse original latest-first scheduling; one older window per run, no replacement scheduler.
     const prior=repository.list(workspaceId,latest-23*HOUR,latest,'hourly');
@@ -777,10 +778,10 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       if((attempt.pending || []).some(p=>p.retryable && p.retryAt<=now() && repository.informationHead(workspaceId,p.id)))return true;
       return repository.listInformation(workspaceId,{startAt:at,endAt:at+HOUR}).some(n=>!attempt.inputIds.includes(n.id));
     });
-    if(target!==undefined) result.push(await generateHour({workspaceId,hourStart:target,priority:-10,totalMs:8*60000}));
+    if(target!==undefined) result.push(await generateHour({workspaceId,hourStart:target,priority:-10,totalMs:catchupBudgetMs}));
     else if(prior.every(r=>r.edition?.status==='ready')) {
       const at=latest-(Math.floor(now()/HOUR)%23+1)*HOUR;
-      result.push(await generateHour({workspaceId,hourStart:at,priority:-10,totalMs:8*60000}));
+      result.push(await generateHour({workspaceId,hourStart:at,priority:-10,totalMs:catchupBudgetMs}));
     }
     return result;
   }};
