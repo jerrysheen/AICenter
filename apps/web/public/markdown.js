@@ -47,12 +47,27 @@ function listMarker(line) {
   };
 }
 
+function isQuoteLine(line) {
+  return /^>\s?/.test(String(line || ''));
+}
+
 function isBlockStart(lines, index) {
   const line = lines[index] || '';
   if (!line.trim()) return true;
   if (/^#{1,3}\s+\S/.test(line)) return true;
+  if (isQuoteLine(line)) return true;
   if (isTableStart(lines, index)) return true;
   return Boolean(listMarker(line));
+}
+
+function takeQuote(lines, start) {
+  const quoted = [];
+  let index = start;
+  while (index < lines.length && isQuoteLine(lines[index])) {
+    quoted.push(lines[index].replace(/^>\s?/, ''));
+    index += 1;
+  }
+  return { quoted, next: index };
 }
 
 function autolinkHtml(value) {
@@ -180,6 +195,13 @@ export function markdownToHtml(value) {
       html.push(`<div class="ask-markdown-table-wrap"><table>${head}${body}</table></div>`);
       continue;
     }
+    if (isQuoteLine(line)) {
+      const taken = takeQuote(lines, index);
+      const parts = taken.quoted.map((item) => item.trim()).filter(Boolean).map((item) => `<p>${inlineHtml(item)}</p>`);
+      html.push(`<blockquote>${parts.join('')}</blockquote>`);
+      index = taken.next;
+      continue;
+    }
     if (listMarker(line)) {
       const parsed = parseList(lines, index);
       html.push(renderListHtml(parsed.list));
@@ -235,6 +257,13 @@ export function markdownShareBlocks(value) {
         index += 1;
       }
       blocks.push({ kind: 'table', headers, rows });
+      continue;
+    }
+    if (isQuoteLine(line)) {
+      const taken = takeQuote(lines, index);
+      const text = plainInline(taken.quoted.join(' '));
+      if (text) blocks.push({ kind: 'text', text });
+      index = taken.next;
       continue;
     }
     if (listMarker(line)) {
