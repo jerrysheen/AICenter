@@ -1092,6 +1092,11 @@ test('a clock-only heading is rewritten from the section topic', async () => {
   assert.equal(repairTimestampHeading('## 利率（00:00:03）\n\n主持人：利率会差 24%。', '00:00:03'), '## 利率（00:00:03）\n\n主持人：利率会差 24%。');
   assert.match(GEMMA_SECTION_SYSTEM, /中文主题/);
   assert.match(GEMMA_SECTION_SYSTEM, /禁止写成 ## 00:00:00/);
+  assert.match(GEMMA_SECTION_SYSTEM, /\*\*加粗\*\*/);
+  assert.match(GEMMA_SECTION_SYSTEM, /不要每段都以「主持人：」/);
+  assert.match(GEMMA_SUMMARY_SYSTEM, /## 要点/);
+  assert.match(GEMMA_SUMMARY_SYSTEM, /\*\*加粗\*\*/);
+  assert.match(stripResidualEnglish('## 利率（00:00:03）\n\n市场认为 **24%** 会留下。'), /\*\*24%\*\*/);
   assert.equal(gemmaArticleNeedsRepair({
     engine: 'gemma',
     parts: [{ text: '已经是中文的一段字幕，里面提到 Dyna Robotics 的机器人。', translation: 'This was flipped into English by the translator.', section: '## 00:00:00' }],

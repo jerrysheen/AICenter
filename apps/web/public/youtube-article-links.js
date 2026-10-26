@@ -67,7 +67,7 @@ export function headingTimeHref(videoId, text) {
   return youtubeWatchUrl(videoId, parsed.seconds);
 }
 
-export function attachYoutubeHeadingTimes(container, videoId, { onOpen } = {}) {
+export function attachYoutubeHeadingTimes(container, videoId, { onOpen, subtitle = false } = {}) {
   if (!container || !videoId || typeof container.querySelectorAll !== 'function') return 0;
   let count = 0;
   for (const heading of container.querySelectorAll('h1, h2, h3, h4')) {
@@ -77,7 +77,7 @@ export function attachYoutubeHeadingTimes(container, videoId, { onOpen } = {}) {
     const href = youtubeWatchUrl(videoId, parsed.seconds);
     if (!href) continue;
     const link = document.createElement('a');
-    link.className = 'youtube-time';
+    link.className = subtitle ? 'youtube-time is-subtitle' : 'youtube-time';
     link.href = href;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
@@ -88,9 +88,14 @@ export function attachYoutubeHeadingTimes(container, videoId, { onOpen } = {}) {
       link.addEventListener('click', (event) => onOpen(href, event));
     }
     if (typeof heading.replaceChildren === 'function') heading.replaceChildren();
-    if (parsed.before) heading.append(document.createTextNode(parsed.before));
-    heading.append(link);
-    if (parsed.after) heading.append(document.createTextNode(parsed.after));
+    if (subtitle) {
+      if (parsed.topic) heading.append(document.createTextNode(parsed.topic));
+      heading.append(link);
+    } else {
+      if (parsed.before) heading.append(document.createTextNode(parsed.before));
+      heading.append(link);
+      if (parsed.after) heading.append(document.createTextNode(parsed.after));
+    }
     count += 1;
   }
   return count;

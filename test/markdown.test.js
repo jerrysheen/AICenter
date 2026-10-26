@@ -41,6 +41,16 @@ test('markdown turns plain http urls into links', () => {
   assert.match(html, /<a href="https:\/\/example.com\/cme-295" target="_blank" rel="noopener noreferrer">https:\/\/example.com\/cme-295<\/a>/);
 });
 
+test('markdown renders quotes, emphasis and keeps headings', () => {
+  const html = markdownToHtml('## 要点\n\n- **利率**会差 24%。\n\n> 这一句是原话。\n\n正文 *仍在* 讨论。');
+  assert.match(html, /<h3>要点<\/h3>/);
+  assert.match(html, /<strong>利率<\/strong>/);
+  assert.match(html, /<ul>/);
+  assert.match(html, /<blockquote><p>这一句是原话。<\/p><\/blockquote>/);
+  assert.match(html, /<em>仍在<\/em>/);
+  assert.doesNotMatch(html, /^>/);
+});
+
 test('markdown links render the label instead of the raw syntax', () => {
   const html = markdownToHtml('见 [课程](https://example.com/cme-295) 与 https://example.com/plain');
   assert.match(html, /<a href="https:\/\/example.com\/cme-295" target="_blank" rel="noopener noreferrer">课程<\/a>/);

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-podcast-reading-format.md`：窄屏播客阅读页不再把标题、频道和速读切换整块吸顶。页头随正文滚走；离开页头后向上滚，才露出一行返回、短标题和速读切换。Gemma 整理新文章时按章节写短段、列表和加粗，不再要求每段写成「主持人：」。已经落库的正文不重跑。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-26-feed-sync-recover-buffer.md`：X 推荐流单源同步默认 180 秒。`feed.subscription.sync` 的最长运行和领取租约都在这条时限上再加 120 秒，recoverStale 不再先于单源截止把任务记成 WorkerRunTimeout。一条都没写入时记 deadline，任务信号中止记 interrupted。不新增 migration。只需要重启 Worker。临时的 `AI_CENTER_FEED_SYNC_SOURCE_TIMEOUT_MS=180000` 可以留着，也可以删掉。
 
 - `progress/2026-10-26-live-transcribe-pace.md`：Live 转写按大约 1.1 倍实时送帧。每分钟 token 只在额度更紧时再放慢，不再把 500 秒音频在大约 48 秒内送完。`inputTokens` 低于估计一半，或没有用量且长音频每秒不足 3 个字，这一段算 Live 失败。先按实时再试一次，仍失败才走文件转写。`turnComplete` 超时后，只有残缺文本不算成功。切段长度不变。不新增 migration。需要重启 Worker。不重跑 Cranmer。

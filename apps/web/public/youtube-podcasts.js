@@ -245,7 +245,8 @@ function fillDetail(detail, episode, api) {
           const article = document.createElement('div');
           article.className = 'podcast-article';
           renderMarkdownInto(article, body || '没有全文。');
-          attachYoutubeHeadingTimes(article, episode.videoId);
+          attachYoutubeHeadingTimes(article, episode.videoId, { subtitle: true });
+          markPodcastKeypoints(article);
           transcript.append(article);
         } else {
           const partial = loaded.partial || episode.partial;
@@ -509,6 +510,102 @@ function readerTab(label, active, onClick) {
   return tab;
 }
 
+// 窄屏阅读：页头随正文滚走。只有继续上滚、且已经离开页头之后，才露出一行返回 / 短标题 / 速读。
+export function podcastReaderFloatVisibility({
+  previousY = 0,
+  nextY = 0,
+  shown = false,
+  narrow = true,
+  revealAfter = 48,
+} = {}) {
+  const y = Number(nextY) || 0;
+  if (!narrow || y < revealAfter) return false;
+  const delta = y - (Number(previousY) || 0);
+  if (delta > 4) return false;
+  if (delta < -4) return true;
+  return Boolean(shown);
+}
+
+function bindPodcastChrome(root, floatBar, flowBar) {
+  const view = typeof window !== 'undefined' ? window : null;
+  if (!view || typeof view.addEventListener !== 'function' || !floatBar) return;
+  if (typeof root._podcastScrollCleanup === 'function') root._podcastScrollCleanup();
+  // 页壳有 overflow-x: clip，固定条放在 body 上才相对视口，而不是被滚走的页头带着走。
+  if (typeof document.querySelectorAll === 'function') {
+    for (const node of document.querySelectorAll('.podcast-reader-float')) {
+      if (node !== floatBar) node.remove();
+    }
+  }
+  if (document.body && typeof document.body.append === 'function' && floatBar.parentElement !== document.body) {
+    document.body.append(floatBar);
+  }
+  let lastY = Number(view.scrollY) || 0;
+  let shown = false;
+  let ticking = false;
+  const media = typeof view.matchMedia === 'function' ? view.matchMedia('(max-width: 720px)') : null;
+  const release = () => {
+    view.removeEventListener('scroll', onScroll);
+    if (typeof floatBar.remove === 'function' && flowBar?.isConnected === false) floatBar.remove();
+    if (root._podcastScrollCleanup === release) root._podcastScrollCleanup = null;
+  };
+  const apply = () => {
+    ticking = false;
+    if (flowBar?.isConnected === false || floatBar.isConnected === false) {
+      release();
+      return;
+    }
+    const y = Number(view.scrollY) || 0;
+    const gate = Math.max(72, Number(flowBar?.offsetHeight) || 0);
+    shown = podcastReaderFloatVisibility({
+      previousY: lastY,
+      nextY: y,
+      shown,
+      narrow: media ? media.matches : true,
+      revealAfter: gate,
+    });
+    lastY = y;
+    if (floatBar.classList && typeof floatBar.classList.toggle === 'function') {
+      floatBar.classList.toggle('is-shown', shown);
+    } else {
+      floatBar.className = shown ? 'podcast-reader-float is-shown' : 'podcast-reader-float';
+    }
+    floatBar.setAttribute('aria-hidden', shown ? 'false' : 'true');
+    if ('inert' in floatBar) floatBar.inert = !shown;
+  };
+  const onScroll = () => {
+    if (ticking) return;
+    ticking = true;
+    if (typeof view.requestAnimationFrame === 'function') view.requestAnimationFrame(apply);
+    else apply();
+  };
+  view.addEventListener('scroll', onScroll, { passive: true });
+  let observer = null;
+  if (typeof MutationObserver === 'function' && root) {
+    observer = new MutationObserver(() => {
+      if (flowBar?.isConnected === false) {
+        observer.disconnect();
+        release();
+      }
+    });
+    observer.observe(root, { childList: true });
+  }
+  root._podcastScrollCleanup = () => {
+    observer?.disconnect();
+    release();
+  };
+}
+
+function readerTabs(reading, onMode, className) {
+  const tabs = el('div', className);
+  tabs.setAttribute('role', 'tablist');
+  tabs.setAttribute('aria-label', '阅读版本');
+  tabs.append(
+    readerTab('速读版', reading === 'speed', () => onMode('speed')),
+    readerTab('全文', reading === 'full', () => onMode('full')),
+  );
+  return tabs;
+}
+
 export function renderPodcastReader(root, {
   episode,
   mode = 'full',
@@ -552,20 +649,28 @@ export function renderPodcastReader(root, {
   star.innerHTML = starIcon || '';
   star.addEventListener('click', () => onStar());
   meta.append(star);
-  const tabs = el('div', 'podcast-switch podcast-reader-tabs');
-  tabs.setAttribute('role', 'tablist');
-  tabs.setAttribute('aria-label', '阅读版本');
-  tabs.append(
-    readerTab('速读版', reading === 'speed', () => onMode('speed')),
-    readerTab('全文', reading === 'full', () => onMode('full')),
-  );
-  bar.append(back, title, meta, tabs);
+  bar.append(back, title, meta, readerTabs(reading, onMode, 'podcast-switch podcast-reader-tabs'));
+  const floatBar = el('div', 'podcast-reader-float');
+  floatBar.setAttribute('aria-hidden', 'true');
+  const floatBack = el('button', 'podcast-reader-back', '‹ 返回');
+  floatBack.type = 'button';
+  floatBack.addEventListener('click', () => onBack());
+  const floatTitle = el('p', 'podcast-reader-float-title', episode?.title || episode?.originalTitle || '未命名单集');
+  floatBar.append(floatBack, floatTitle, readerTabs(reading, onMode, 'podcast-switch podcast-reader-float-tabs'));
   const body = el('div', 'reader-content detail-body');
   body.dataset.readerPane = reading;
   if (reading === 'speed') fillSpeedRead(body, episode, () => onMode('full'));
   else fillFullArticle(body, episode);
-  article.append(bar, body);
+  article.append(bar, body, floatBar);
   root.append(article);
+  bindPodcastChrome(root, floatBar, bar);
+}
+
+function markPodcastKeypoints(article) {
+  if (typeof article?.querySelector !== 'function') return;
+  const heading = article.querySelector('h2, h3, h4');
+  const label = String(heading?.textContent || '').trim();
+  if (heading && /^要点(?:\s|$)/.test(label)) heading.classList.add('podcast-keypoints');
 }
 
 function fillSpeedRead(body, episode, onFull) {
@@ -594,7 +699,8 @@ function fillFullArticle(body, episode) {
     }
     const article = el('div', 'podcast-article');
     renderMarkdownInto(article, episode.body);
-    attachYoutubeHeadingTimes(article, episode.videoId);
+    attachYoutubeHeadingTimes(article, episode.videoId, { subtitle: true });
+    markPodcastKeypoints(article);
     body.append(article);
     return;
   }

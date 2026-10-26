@@ -77,8 +77,8 @@ test('one long episode drops from 62 Gemma calls to 14', () => {
   assert.deepEqual(after, { parts: 6, translate: 6, section: 6, summary: 1, title: 1, total: 14 });
   assert.equal(translationChunkChars(), 1500);
   const bounds = longVideoPartBounds();
-  assert.equal(bounds.maxChars, 7860);
-  assert.equal(bounds.minChars, 5187);
+  assert.equal(bounds.maxChars, 7840);
+  assert.equal(bounds.minChars, 5174);
   assert.equal(gemmaRequestBudget(GEMMA_TRANSLATE_SYSTEM, 'a'.repeat(bounds.maxChars), bounds.maxChars).fits, true);
   assert.equal(gemmaRequestBudget(GEMMA_SECTION_SYSTEM, '字'.repeat(bounds.maxChars), bounds.maxChars + 64).fits, true);
   assert.equal(gemmaRequestBudget(GEMMA_SECTION_SYSTEM, '字'.repeat(bounds.maxChars + 10), bounds.maxChars + 74).fits, false);

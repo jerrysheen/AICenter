@@ -64,6 +64,7 @@ const {
   YOUTUBE_ARTICLE_POLL_SLOW_MS,
   renderPodcastLibrary,
   renderPodcastReader,
+  podcastReaderFloatVisibility,
   podcastStatusLabel,
 } = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
 process.on('exit', () => rmSync(pageDir, { recursive: true, force: true }));
@@ -310,8 +311,14 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   });
   assert.match(textOf(root), /速读整理中/);
   assert.equal(textOf(root).includes('正文完整'), false);
-  assert.equal(findAll(root, (node) => node.textContent === '速读版').length, 1);
-  assert.equal(findAll(root, (node) => node.textContent === '全文').length, 1);
+  assert.equal(findAll(root, (node) => node.textContent === '速读版').length, 2);
+  assert.equal(findAll(root, (node) => node.textContent === '全文').length, 2);
+  const floatBar = findAll(root, (node) => node.className === 'podcast-reader-float')[0];
+  assert.equal(floatBar['aria-hidden'], 'true');
+  assert.equal(floatBar.className.includes('is-shown'), false);
+  assert.equal(textOf(floatBar).includes('打开 YouTube'), false);
+  assert.match(textOf(floatBar), /较早的一集/);
+  assert.equal(findAll(floatBar, (node) => node.textContent === '速读版').length, 1);
   findAll(root, (node) => node.textContent === '‹ 返回')[0].listeners.click();
   assert.equal(back, 1);
   findAll(root, (node) => node.textContent === '全文')[0].listeners.click();
@@ -328,4 +335,22 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   renderPodcastReader(root, { episode: speed, mode: 'speed' });
   assert.match(textOf(root), /三句话讲完/);
   assert.equal(textOf(root).includes('速读整理中'), false);
+  renderPodcastReader(root, {
+    episode: {
+      ...ready,
+      body: '## 要点\n\n- **利率**会差 24%。\n\n## 利率路径（00:12:03）\n\n市场认为路径变了。\n\n> 这一句是原话。',
+    },
+    mode: 'full',
+  });
+  const rich = findAll(root, (node) => node.className === 'podcast-article')[0].innerHTML;
+  assert.match(rich, /<strong>利率<\/strong>/);
+  assert.match(rich, /<ul>/);
+  assert.match(rich, /<blockquote>/);
+  assert.match(rich, /<h3>/);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 0, nextY: 20, shown: false, narrow: true, revealAfter: 180 }), false);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 80, nextY: 420, shown: false, narrow: true, revealAfter: 180 }), false);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 360, shown: false, narrow: true, revealAfter: 180 }), true);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 362, shown: true, narrow: true, revealAfter: 180 }), true);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 100, shown: true, narrow: true, revealAfter: 180 }), false);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 300, shown: false, narrow: false, revealAfter: 180 }), false);
 });
