@@ -252,8 +252,10 @@ test('a long X video is transcribed once, keeps the tweet body, and shares the d
     assert.equal(downloads, 1);
     const article = videos.article('local', `${TWEET}:1`);
     assert.equal(article.status, 'ready');
-    assert.match(article.articleBody, /章节总结/);
+    assert.match(article.articleBody, /## 开场说明（00:00:00）/);
+    assert.match(article.articleBody, /讲座说明怎样避免被人工智能带偏/);
     assert.match(article.articleBody, /这是按原文顺序译出的一句话/);
+    assert.equal(article.articleBody.includes('章节总结'), false);
     assert.equal(article.articleBody.includes('### 对话'), false);
     assert.equal(article.articleTitle, '如何避免人工智能把判断力带偏');
     assert.match(article.sourceTranscript, /^\[00:00:00\]/);

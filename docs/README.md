@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-podcast-synthetic-article.md`：新整理的每一段由 Gemma 26B 写提炼正文（数字、人名、公司写进正文），Flash Lite 只切一次章。默认按章把正文接成一篇。`point-compile` 和 `flash-polish` 先登记，还没接模型。已 `ready` 的并行稿和章节对话稿不自动重写。不新增 migration。只需要重启 Worker。
+
 - `progress/2026-10-26-podcast-parallel-segments.md`：新整理改为 Gemma 26B 并行分段（译文 + hint + topic，默认并发 8），再由 Flash Lite 用摘录写一次整集脉络，按 `partIds` 合并全文。已 `ready` 的稿不自动重写。不新增 migration。只需要重启 Worker。
 
 - `progress/2026-10-26-feed-preprocess-merged.md`：`AI_CENTER_FEED_PREPROCESS_MERGED` 默认关闭。设为 `1` 后，需要中文译文且不超过一个翻译窗口（默认 1500 字）的新帖，一次 Gemma 26B 同时写入译文和标签。更长的帖、中文短帖和失败的那一条仍走原来的分开路径。不回填旧帖。不新增 migration。默认不设变量就没有行为变化。打开或回退都只需要重启 Worker。

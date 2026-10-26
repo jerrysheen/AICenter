@@ -803,9 +803,11 @@ test('gemma translates each part, stores it, then writes one article', async () 
     const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaarticle1');
     assert.equal(saved.articleStatus, 'ready');
     assert.match(saved.body, /## 利率（00:00:03）/);
-    assert.match(saved.body, /### 章节总结/);
-    assert.match(saved.body, /\*\*一句话：\*\* 利率会差 24%。/);
+    assert.match(saved.body, /利率会差 24%。/);
     assert.match(saved.body, /主持人：利率会差 24%/);
+    assert.ok(saved.body.indexOf('利率会差 24%。') < saved.body.indexOf('主持人：利率会差 24%'));
+    assert.equal(saved.body.includes('### 章节总结'), false);
+    assert.equal(saved.body.includes('- NVDA'), false);
     assert.equal(saved.body.includes('### 对话'), false);
     assert.equal(/^# 利率/m.test(saved.body), false);
     assert.equal((saved.body.match(/^## 利率/gm) || []).length, 1);
@@ -826,6 +828,9 @@ test('gemma translates each part, stores it, then writes one article', async () 
     assert.equal(state.parts[0].provider, 'gemma');
     assert.deepEqual(state.parts[0].calls, { gemma: 1, flash: 0 });
     assert.equal(state.layout, PARALLEL_SEGMENT_LAYOUT);
+    assert.equal(state.mergeStrategy, 'chapter-concat');
+    assert.equal(state.mergeRequested, '');
+    assert.equal(state.parts[0].segmentKind, 'prose');
     assert.deepEqual(state.parts[0].hint, ['利率会差 24%']);
     assert.equal(state.summaryProvider, 'flash');
     assert.deepEqual(state.summaryCalls, { gemma: 0, flash: 1 });
@@ -930,7 +935,7 @@ test('a quota window keeps finished parts and a gemma failure can use flash', as
     });
     assert.equal(second.ready, 1);
     assert.equal(gemma.calls.slice(finished).some((call) => call.prompt.includes('Sentence 0 discusses')), false);
-    assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /### 章节总结/);
+    assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body.includes('### 章节总结'), false);
     assert.match(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body, /利率会差 24%/);
     assert.equal(opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaquota01').body.includes('Sentence 0 discusses'), false);
   } finally {
@@ -997,7 +1002,7 @@ test('a failed gemma part falls back to flash and does not resend finished text'
   }
 });
 
-test('chinese captions are organized without a translation call', async () => {
+test('chinese captions are written as prose in one gemma pass', async () => {
   const opened = openStore();
   const transcript = '[00:00:01] Dyna Robotics 今天发布了新的机器人行走方案，现场演示了户外地形适应，工程师解释了关节扭矩。';
   const item = await saveYoutubeEpisode({
@@ -1024,7 +1029,8 @@ test('chinese captions are organized without a translation call', async () => {
     articleStatus: 'pending',
   });
   const gemma = fakeGemma((input) => {
-    if (input.system === GEMMA_SEGMENT_SYSTEM || input.system === GEMMA_TRANSLATE_SYSTEM) throw new Error('中文字幕不应再翻译');
+    if (input.system === GEMMA_TRANSLATE_SYSTEM) throw new Error('中文字幕不应再走忠实翻译');
+    if (input.system === GEMMA_SEGMENT_SYSTEM) return segmentReply();
     if (input.system === EPISODE_STRUCTURE_SYSTEM) {
       return {
         text: JSON.stringify({
@@ -1045,14 +1051,19 @@ test('chinese captions are organized without a translation call', async () => {
       now: Date.parse('2026-10-19T02:00:00Z'),
     });
     assert.equal(result.ready, 1);
-    assert.deepEqual(gemma.calls.map((call) => call.system), [EPISODE_STRUCTURE_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SEGMENT_SYSTEM, EPISODE_STRUCTURE_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
     assert.match(gemma.calls[0].prompt, /机器人行走方案/);
+    assert.equal(gemma.calls.some((call) => call.system === GEMMA_TRANSLATE_SYSTEM), false);
     const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'gemmachinese1').articleState);
-    assert.equal(state.parts[0].provider, 'source');
-    assert.match(state.parts[0].translation, /机器人行走方案/);
-    assert.deepEqual(state.parts[0].calls, { gemma: 0, flash: 0 });
+    assert.equal(state.parts[0].provider, 'gemma');
+    assert.equal(state.parts[0].segmentKind, 'prose');
+    assert.match(state.parts[0].translation, /24%/);
+    assert.deepEqual(state.parts[0].calls, { gemma: 1, flash: 0 });
     const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmachinese1').body;
     assert.match(body, /## 户外行走（00:00:01）/);
+    assert.match(body, /机器人开始户外行走。/);
+    assert.equal(body.includes('关节扭矩'), false);
+    assert.equal(body.includes('章节总结'), false);
     assert.equal(/^## 00:00:01$/m.test(body), false);
   } finally {
     opened.close();
@@ -1222,7 +1233,7 @@ test('a clock-only heading is rewritten from the section topic', async () => {
     assert.equal(result.ready, 1);
     const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaclock001').body;
     assert.match(body, /## 利率（00:00:03）/);
-    assert.match(body, /### 章节总结/);
+    assert.equal(body.includes('### 章节总结'), false);
     assert.equal(/^## 00:00:03$/m.test(body), false);
     assert.equal(repairTimestampHeading('## 00:00:00\n\n主持人：利率会差 24%，NVDA 仍在讨论。', '00:00:00').startsWith('## 利率会差'), true);
   } finally {
@@ -1700,8 +1711,151 @@ test('one failed segment is retried without dropping the segments that succeeded
     assert.equal(state.parts.length >= 2, true);
     assert.equal(state.parts.every((part) => part.translation.includes('24%')), true);
     const body = opened.store.repositories.youtubePodcasts.getReady('local', 'gemmaretryseg').body;
-    assert.match(body, /### 章节总结/);
+    assert.equal(body.includes('### 章节总结'), false);
+    assert.match(body, /利率会差 24%/);
     assert.equal(body.includes('Sentence 0 discusses'), false);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a ready parallel-segments article is not rewritten into the new prose', async () => {
+  const opened = openStore();
+  const transcript = '[00:00:01] Dyna Robotics 今天发布了新的机器人行走方案，现场演示了户外地形适应，工程师解释了关节扭矩。';
+  const gemma = fakeGemma(() => { throw new Error('已就绪的并行稿不应再调用模型'); });
+  try {
+    const item = await saveYoutubeEpisode({
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      creator: { id: 'odd-lots', name: 'Odd Lots', focus: '金融', channels: [{ key: 'odd-lots' }] },
+      episode: { videoId: 'readyparallel1', title: 'Dyna', channelKey: 'odd-lots', publishedAt: Date.parse('2026-10-18T00:00:00Z'), durationSec: 1800 },
+      summaryText: '中文摘要',
+      displayTitle: '机器人',
+      transcript,
+      transcriptSource: 'subtitle-manual',
+    });
+    const stored = opened.store.repositories.feed.getContentItem('local', item.id);
+    opened.store.repositories.feed.saveContentItem({
+      workspaceId: 'local',
+      captureId: stored.captureId,
+      originType: stored.originType,
+      contentType: stored.contentType,
+      title: stored.title,
+      body: '## 旧章\n\n### 章节总结\n\n旧的双层稿留在这里',
+      summary: stored.summary,
+      sourceUrl: stored.sourceUrl,
+      authorName: stored.authorName,
+      publishedAt: stored.publishedAt,
+    });
+    opened.store.repositories.youtubePodcasts.saveEpisode({
+      workspaceId: 'local',
+      videoId: 'readyparallel1',
+      creatorId: 'odd-lots',
+      channelKey: 'odd-lots',
+      title: 'Dyna',
+      status: 'ready',
+      contentItemId: item.id,
+      attempts: 1,
+      sourceTranscript: transcript,
+      sourceHash: transcriptHash(transcript),
+      articleStatus: 'ready',
+      articleDay: '2026-10-19',
+      articleState: JSON.stringify({
+        engine: 'gemma',
+        layout: 'parallel-segments',
+        hash: transcriptHash(transcript),
+        parts: [{
+          text: transcript,
+          start: '00:00:01',
+          status: 'translated',
+          translation: 'The old faithful translation stayed in English.',
+          section: '## 00:00:01',
+          provider: 'gemma',
+          calls: { gemma: 1, flash: 0 },
+        }],
+      }),
+    });
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T08:00:00Z'),
+    });
+    assert.equal(result.ready, 0);
+    assert.equal(result.skipped, 1);
+    assert.equal(gemma.calls.length, 0);
+    assert.equal(opened.store.repositories.youtubePodcasts.episode('local', 'readyparallel1').articleStatus, 'ready');
+    assert.match(opened.store.repositories.feed.getContentItem('local', item.id).body, /旧的双层稿留在这里/);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a pending faithful segment is rewritten once as prose', async () => {
+  const opened = openStore();
+  const gemma = fakeGemma((input) => articleReply(input));
+  try {
+    const transcript = await saveShortEpisode(opened, 'oldfaithful01');
+    const repo = opened.store.repositories.youtubePodcasts;
+    const row = repo.episode('local', 'oldfaithful01');
+    repo.saveEpisode({
+      workspaceId: 'local',
+      videoId: row.videoId,
+      creatorId: row.creatorId,
+      channelKey: row.channelKey,
+      title: row.title,
+      durationSec: row.durationSec,
+      publishedAt: row.publishedAt,
+      status: 'ready',
+      contentItemId: row.contentItemId,
+      attempts: 1,
+      sourceTranscript: transcript,
+      sourceHash: transcriptHash(transcript),
+      articleStatus: 'pending',
+      articleState: JSON.stringify({
+        engine: 'gemma',
+        layout: 'parallel-segments',
+        hash: transcriptHash(transcript),
+        chapters: [{ title: '旧章', partIds: [0], oneLiner: '旧导语', bullets: ['旧要点'] }],
+        parts: [{
+          text: transcript,
+          start: '00:00:03',
+          status: 'translated',
+          translation: '旧的逐句译文，不该原样留在正文里。',
+          hint: ['旧 hint'],
+          topic: '旧主题',
+          provider: 'gemma',
+          calls: { gemma: 1, flash: 0 },
+        }],
+      }),
+    });
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1', AI_CENTER_PODCAST_MERGE: 'flash-polish' },
+      repository: repo,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: null,
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_SEGMENT_SYSTEM, EPISODE_STRUCTURE_SYSTEM, GEMMA_ARTICLE_TITLE_SYSTEM]);
+    assert.equal(gemma.calls.filter((call) => call.system === GEMMA_SEGMENT_SYSTEM).length, 1);
+    assert.equal(gemma.calls.some((call) => call.system === GEMMA_TRANSLATE_SYSTEM), false);
+    const state = JSON.parse(repo.episode('local', 'oldfaithful01').articleState);
+    assert.equal(state.mergeStrategy, 'chapter-concat');
+    assert.equal(state.mergeRequested, 'flash-polish');
+    assert.equal(state.parts[0].segmentKind, 'prose');
+    assert.equal(state.parts[0].translation.includes('旧的逐句译文'), false);
+    const body = repo.getReady('local', 'oldfaithful01').body;
+    assert.equal(body.includes('旧的逐句译文'), false);
+    assert.equal(body.includes('旧要点'), false);
+    assert.equal(body.includes('### 章节总结'), false);
+    assert.match(body, /## 利率（00:00:03）/);
+    assert.match(body, /主持人：利率会差 24%/);
   } finally {
     opened.close();
   }
