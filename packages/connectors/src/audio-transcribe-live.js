@@ -12,6 +12,40 @@ import {
 
 const LIVE_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
 const FRAME_MS = 100;
+// Live digests audio near realtime. 1.1× stays inside 1.0–1.2× and does not dump a chunk in one TPM window.
+export const LIVE_REALTIME_FACTOR = 1.1;
+export const LIVE_MIN_INPUT_TOKEN_RATIO = 0.5;
+export const LIVE_MIN_CHARS_PER_SECOND = 3;
+export const LIVE_CHARS_CHECK_MIN_MS = 30_000;
+
+export function clampLiveRealtimeFactor(value) {
+  const factor = Number(value);
+  if (!Number.isFinite(factor)) return LIVE_REALTIME_FACTOR;
+  return Math.min(1.2, Math.max(1, factor));
+}
+
+export function liveSendEarliestMs(audioMs, tokens, {
+  tokensPerMinute = AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE,
+  realtimeFactor = LIVE_REALTIME_FACTOR,
+} = {}) {
+  const realtimeMs = Number(audioMs) / clampLiveRealtimeFactor(realtimeFactor);
+  const quotaMs = Number(tokensPerMinute) > 0
+    ? Number(tokens) / Number(tokensPerMinute) * 60_000
+    : realtimeMs;
+  return Math.max(realtimeMs, Number.isFinite(quotaMs) ? quotaMs : realtimeMs);
+}
+
+export function isSparseLiveTranscript({ text, durationMs, inputTokens, estimatedTokens } = {}) {
+  const estimated = Number(estimatedTokens);
+  const hasInput = inputTokens !== null && inputTokens !== undefined && inputTokens !== '';
+  if (hasInput && Number.isFinite(estimated) && estimated > 0) {
+    const input = Number(inputTokens);
+    if (Number.isFinite(input) && input >= 0) return input < estimated * LIVE_MIN_INPUT_TOKEN_RATIO;
+  }
+  if (!Number.isFinite(durationMs) || durationMs < LIVE_CHARS_CHECK_MIN_MS) return false;
+  const chars = String(text || '').trim().length;
+  return chars / (durationMs / 1000) < LIVE_MIN_CHARS_PER_SECOND;
+}
 
 export function liveTranscribeUrl() {
   return LIVE_URL;
@@ -49,7 +83,8 @@ function liveClientError(error, code) {
         : category === 'live-unavailable' ? 'Live 转写不可用'
           : category === 'live-audio' ? 'Live 转写读不到音频'
             : category === 'live-empty' ? 'Live 转写结果为空'
-              : 'Live 转写失败';
+              : category === 'live-sparse' ? 'Live 转写结果过稀'
+                : 'Live 转写失败';
   const wrapped = new Error(message);
   wrapped.code = category;
   return wrapped;
@@ -135,6 +170,7 @@ export function createGeminiLiveTranscriber({
   model,
   tokensPerMinute = AUDIO_TRANSCRIBE_TOKENS_PER_MINUTE,
   tokensPerSecond = AUDIO_TRANSCRIBE_TOKENS_PER_SECOND,
+  realtimeFactor = LIVE_REALTIME_FACTOR,
   frameMs = FRAME_MS,
   timeoutMs = 180_000,
 } = {}) {
@@ -151,6 +187,8 @@ export function createGeminiLiveTranscriber({
       throw Object.assign(new Error(clipSecret(error?.message) || 'Live 转写读不到音频'), { code: 'live-audio' });
     }
     if (!pcm.length) throw Object.assign(new Error('Live 转写音频为空'), { code: 'live-audio' });
+    const durationMs = Math.floor(pcm.length / 2 / sampleRate * 1000);
+    const estimatedTokens = durationMs / 1000 * tokensPerSecond;
     const usage = liveUsageRow(liveModel, secret);
     await observeModelUsage(usage);
     const finishUsage = async (status, httpStatus = null) => {
@@ -231,13 +269,17 @@ export function createGeminiLiveTranscriber({
       await setupWait;
       const frameBytes = liveFrameBytes(sampleRate, frameMs);
       const started = now();
+      let sentAudioMs = 0;
       let sentTokens = 0;
       for (let offset = 0; offset < pcm.length; offset += frameBytes) {
         if (signal?.aborted) throw Object.assign(new Error('转写已取消'), { name: 'AbortError' });
         if (failed) throw failed;
-        const frameTokens = Math.min(frameBytes, pcm.length - offset) / 2 / sampleRate * tokensPerSecond;
-        sentTokens += frameTokens;
-        const earliest = started + sentTokens / tokensPerMinute * 60_000;
+        const bytes = Math.min(frameBytes, pcm.length - offset);
+        const audioMs = bytes / 2 / sampleRate * 1000;
+        sentAudioMs += audioMs;
+        sentTokens += audioMs / 1000 * tokensPerSecond;
+        // TPM is a ceiling. The interval follows audio time, so Live is not asked to swallow a chunk in a few seconds.
+        const earliest = started + liveSendEarliestMs(sentAudioMs, sentTokens, { tokensPerMinute, realtimeFactor });
         const delay = earliest - now();
         if (delay > 0) await sleep(delay);
         if (signal?.aborted) throw Object.assign(new Error('转写已取消'), { name: 'AbortError' });
@@ -264,15 +306,27 @@ export function createGeminiLiveTranscriber({
       } catch (error) {
         turnError = error;
       }
-      const text = (finals.join('') || interim).trim();
-      if (text && turnError?.name !== 'AbortError') {
+      if (turnError?.name === 'AbortError') throw turnError;
+      const finalText = finals.join('').trim();
+      const interimText = interim.trim();
+      const text = finalText || interimText;
+      const sparse = isSparseLiveTranscript({
+        text,
+        durationMs,
+        inputTokens: usageTokens?.inputTokens,
+        estimatedTokens,
+      });
+      const timedOut = Boolean(turnError);
+      const partial = !finalText;
+      if (text && !sparse && !(timedOut && partial)) {
         await finishUsage('succeeded');
         return text;
       }
+      if (text && (sparse || (timedOut && partial))) {
+        throw liveClientError(new Error('Live 转写结果过稀'), 'live-sparse');
+      }
       if (turnError) throw turnError;
-      if (!text) throw liveClientError(new Error('Live 转写结果为空'), 'live-empty');
-      await finishUsage('succeeded');
-      return text;
+      throw liveClientError(new Error('Live 转写结果为空'), 'live-empty');
     } catch (error) {
       const aborted = error?.name === 'AbortError';
       await finishUsage(aborted ? 'interrupted' : 'failed', error?.code === 'live-timeout' ? 408 : null);

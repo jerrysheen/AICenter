@@ -27,7 +27,7 @@ const WAIT_LIMIT_MS = 6 * 60 * 60_000;
 const NETWORK_ATTEMPTS = 3;
 
 const LIVE_CATEGORIES = new Set([
-  'live-audio', 'live-timeout', 'live-connect', 'live-empty', 'live-unavailable', 'live-failed',
+  'live-audio', 'live-timeout', 'live-connect', 'live-empty', 'live-sparse', 'live-unavailable', 'live-failed',
 ]);
 
 export function isTranscribeNetworkError(error) {
@@ -51,6 +51,7 @@ export function transcribeErrorCategory(error) {
   if (/Live 转写不可用/.test(message)) return 'live-unavailable';
   if (/Live 转写音频为空|Live 转写读不到音频/.test(message)) return 'live-audio';
   if (/Live 转写结果为空/.test(message)) return 'live-empty';
+  if (/Live 转写结果过稀/.test(message)) return 'live-sparse';
   return 'upstream';
 }
 
@@ -185,9 +186,9 @@ async function transcribeChunk({
       if (state) state.sent = true;
     },
   });
-  try {
+  const runLive = () => {
     const at = now();
-    return await callLimited({
+    return callLimited({
       repository: quotaRepository,
       lane,
       tokens: chunk.estimatedTokens,
@@ -201,31 +202,43 @@ async function transcribeChunk({
       dayEnd: at + 86_400_000,
       run: run(liveTranscribe, audio),
     });
-  } catch (error) {
-    if (error?.name === 'AbortError' || signal?.aborted || !fallbackTranscribe) throw error;
-    onLiveFailure?.(error);
-    const parts = [];
-    for (const piece of planFileTranscribePieces(chunk, tokensPerSecond)) {
-      const slice = slicePiece(audio, chunk.startMs, piece.startMs, piece.endMs);
-      const day = pacificDay(now());
-      parts.push(await callLimited({
-        repository: quotaRepository,
-        lane,
-        tokens: piece.estimatedTokens,
-        now,
-        sleep,
-        signal,
-        model: fileModel,
-        requestsPerDay: AUDIO_TRANSCRIBE_FILE_REQUESTS_PER_DAY,
-        estimatedTokensPerMinute: AUDIO_TRANSCRIBE_FILE_TOKENS_PER_MINUTE,
-        dayStart: day.dayStart,
-        dayEnd: day.dayEnd,
-        run: run(fallbackTranscribe, slice),
-        chargeOnceSent: true,
-      }));
-    }
-    return parts.filter(Boolean).join('\n');
+  };
+  let error;
+  try {
+    return await runLive();
+  } catch (caught) {
+    error = caught;
   }
+  if (error?.code === 'live-sparse' && error?.name !== 'AbortError' && !signal?.aborted) {
+    try {
+      return await runLive();
+    } catch (caught) {
+      error = caught;
+    }
+  }
+  if (error?.name === 'AbortError' || signal?.aborted || !fallbackTranscribe) throw error;
+  onLiveFailure?.(error);
+  const parts = [];
+  for (const piece of planFileTranscribePieces(chunk, tokensPerSecond)) {
+    const slice = slicePiece(audio, chunk.startMs, piece.startMs, piece.endMs);
+    const day = pacificDay(now());
+    parts.push(await callLimited({
+      repository: quotaRepository,
+      lane,
+      tokens: piece.estimatedTokens,
+      now,
+      sleep,
+      signal,
+      model: fileModel,
+      requestsPerDay: AUDIO_TRANSCRIBE_FILE_REQUESTS_PER_DAY,
+      estimatedTokensPerMinute: AUDIO_TRANSCRIBE_FILE_TOKENS_PER_MINUTE,
+      dayStart: day.dayStart,
+      dayEnd: day.dayEnd,
+      run: run(fallbackTranscribe, slice),
+      chargeOnceSent: true,
+    }));
+  }
+  return parts.filter(Boolean).join('\n');
 }
 
 function quotaDelay(error) {
