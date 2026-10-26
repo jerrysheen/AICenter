@@ -105,6 +105,7 @@ export function planAudioTranscription({
 } = {}) {
   if (!Number.isSafeInteger(durationMs) || durationMs <= 0) throw new Error('音频时长无效');
   if (!Number.isSafeInteger(laneCount) || laneCount < 1) throw new Error('转写通道数量无效');
+  // Chunk length stays on the token budget. Live playback pace is separate and stays near realtime.
   const chunkMs = Math.min(maxChunkMs, Math.floor(tokensPerMinute * safety / tokensPerSecond) * 1000);
   if (chunkMs < 1000) throw new Error('每分钟额度不够容纳一个音频片段');
   const chunks = [];
