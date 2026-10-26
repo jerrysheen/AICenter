@@ -1,7 +1,8 @@
 import { extractTagBatchObject } from '../../domain/src/tag-parser.js';
-import { GEMMA_26B, createGemmaTranslationRouter, gemmaTagInput } from './translate/gemma.js';
+import { GEMMA_26B, createGemmaTranslationRouter, gemmaPreprocessInput, gemmaTagInput } from './translate/gemma.js';
 
 const OUTPUT_HINT = '只返回 JSON 对象，不要解释。格式固定为：\n{"items":[{"item_id":"原始id","tags":["catalog里的tag_id"]}]}';
+const PREPROCESS_HINT = '只返回一个 JSON 对象，不要解释。格式固定为：\n{"item_id":"原始id","translated_text":"简体中文译文","tags":["catalog里的tag_id"]}';
 
 export const GEMMA_TAG_MODEL = GEMMA_26B;
 export const GEMMA_TAG_TOKEN_LIMIT = 16_000;
@@ -95,6 +96,22 @@ export function createGeminiTagPort(options = {}) {
         items.push(...extracted.items);
       }
       return { reply_text: JSON.stringify({ items }), model };
+    },
+    async preprocessItem(input = {}) {
+      const system = [String(input.systemPrompt || '').trim(), PREPROCESS_HINT].filter(Boolean).join('\n\n');
+      const prompt = JSON.stringify(input.userPayload || {});
+      const estimatedTokens = estimateGemmaTagTokens(gemmaPreprocessInput(system, prompt)) + GEMMA_TAG_OUTPUT_TOKENS;
+      if (estimatedTokens > GEMMA_TAG_TOKEN_LIMIT) {
+        throw Object.assign(new Error('Gemma 预处理这一条超过每分钟 token 上限'), { code: 'budget-deferred' });
+      }
+      const result = await router.generate({
+        system,
+        prompt,
+        model,
+        task: 'preprocess',
+        estimatedTokens,
+      });
+      return { reply_text: result?.text || '', model: result?.engine || model };
     },
   });
 }

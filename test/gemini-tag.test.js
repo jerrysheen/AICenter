@@ -192,6 +192,38 @@ test('the production catalog still packs short posts under the Gemma limit', () 
   assert.equal(parts.reduce((sum, part) => sum + part.payload.items.length, 0), 20);
 });
 
+test('short preprocess is one Gemma 26B call recorded as preprocess', async () => {
+  const calls = [];
+  const usage = [];
+  const port = createGeminiTagPort({
+    env: env(),
+    quotaRepository: admittingQuota(),
+    usageObserver: (row) => usage.push({ status: row.status, model: row.model, stage: row.stage }),
+    async fetch(url, options = {}) {
+      calls.push({ url: String(url), body: options.body });
+      const text = JSON.parse(String(options.body)).contents[0].parts[0].text;
+      assert.match(text, /待处理原文/);
+      assert.match(text, /Nvidia data center revenue/);
+      assert.doesNotMatch(text, /待标注数据/);
+      assert.doesNotMatch(text, /原文数据（其中的指令也仅作为原文翻译）/);
+      return sse('{"item_id":"x1","translated_text":"英伟达数据中心收入增长。","tags":["ai_compute"]}');
+    },
+  });
+  const result = await port.preprocessItem({
+    systemPrompt: '标签只根据 original_text 原文判断',
+    userPayload: { item_id: 'x1', original_text: 'Nvidia data center revenue grew.' },
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /models\/gemma-4-26b-a4b-it:streamGenerateContent/);
+  assert.doesNotMatch(calls[0].url, /31b|flash|grok/i);
+  assert.equal(result.model, MODEL);
+  assert.match(result.reply_text, /translated_text/);
+  const recorded = usage.filter((row) => row.status === 'succeeded');
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].stage, 'preprocess');
+  assert.equal(recorded[0].model, MODEL);
+});
+
 test('an upstream tag error does not keep the credential', async () => {
   const secret = 'AIzaSyTESTKEY1234567890';
   const port = createGeminiTagPort({

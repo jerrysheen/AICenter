@@ -817,6 +817,7 @@ export function createAiCenterWorker(options = {}) {
       feedService,
       feedRepository: store.repositories.feed,
       taggingService,
+      env,
     }),
   });
   const twkrFlags = loadTwkrFlags(path.join(instance.configDirectory, 'twkr-sources.json'));
