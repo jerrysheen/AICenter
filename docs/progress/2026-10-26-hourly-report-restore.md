@@ -14,7 +14,7 @@
 
 - 非当前小时不再用固定 8 分钟。预算至少等于当前小时的 `totalMs`（默认 20 分钟），并且至少够一次排队等待加一次执行再加 30 秒。默认排队等待仍是 390 秒。不中止已经在跑的调用。
 - `recoverStaleJobs` 对 `report.hourly.extract` 和翻译一样：租约中断保留已用次数，并给 `max_attempts` 加一。运行超过 `AI_CENTER_HOURLY_MAX_RUNNING_MS`（默认 45 分钟）仍记 `WorkerRunTimeout`，不补次数。
-- 10 分钟一次的失败补跑仍先排已到重试时间的失败小时，每轮最多 2 条。名额有剩时，再排最近 24 个已结束小时里没有刊期头的小时。已发布的小时不重排。当前小时仍只使用剩下的名额。
+- 10 分钟一次的失败补跑仍先排已到重试时间的失败小时，每轮最多 2 条。当前小时只在这些失败小时还留有名额时进入。名额仍有剩时，再排最近 24 个已结束小时里没有刊期头的小时。已发布的小时不重排。没有头的小时不会插到已到点的失败小时前面。
 - 首页和简报页「小时报」把阅读小时索引里已有稿、树上没有头的小时补进同一份列表。树上的刊期优先。
 
 ## 改动
@@ -23,7 +23,7 @@
 
 ## 验证
 
-`node --test test/hourly-failure-catchup.test.js test/information-tree-next.test.js test/home-timeline.test.js test/report-reliability.test.js`。
+`node --test test/hourly-failure-catchup.test.js test/information-tree-next.test.js test/home-timeline.test.js test/report-reliability.test.js test/translation-reliability.test.js`。
 
 默认补跑预算是 20 分钟。把总预算降到 1 分钟时，结果是 390 秒排队加 180 秒执行再加 30 秒。失败小时仍先占满 2 条名额。没有头的小时使用剩下的名额，已发布的小时不进队列。小时摘选被租约打断两次后仍回到队列，并且 `max_attempts` 增加；运行超时不增加。阅读索引里多出来的小时会出现在首页小时列表，已有树刊期的同一小时不重复。
 

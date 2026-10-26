@@ -72,9 +72,10 @@ export function hourHasNewMaterial(attempt, nodes, lookup) {
   return !editionCoversMaterials(attempt, nodes, lookup);
 }
 
-// Older due failures fill the cap first. Hours in the same window with no saved
-// head use whatever slots remain. The latest ended hour only uses a slot that is
-// still free, so a failing current hour cannot keep 10:00 and 11:00 off the queue.
+// Older due failures fill the cap first. The latest ended hour uses a slot that
+// is still free, so a failing current hour cannot keep 10:00 and 11:00 off the
+// queue, and a calendar hole cannot keep that current hour off the queue either.
+// Hours with no saved head use whatever slots remain after those due failures.
 // A failed attempt that does not cover the current nodes is still due. The prepare path
 // queues only the newest hour, so treating that gap as "new material" left a middle hour
 // off both paths. A restart that dies before publish leaves no attempt, and that hole
@@ -106,9 +107,12 @@ export function dueFailedHourCatchupPlan({at, rows = [], openHourStarts = new Se
   }
   olderDue.sort((a, b) => a - b);
   olderMissing.sort((a, b) => a - b);
-  const selected = [...olderDue, ...olderMissing].slice(0, cap);
+  // Due failures, including the current hour when a slot remains, fill the cap
+  // before a calendar hole. A missing hour must not push a failing current hour back.
+  const selected = olderDue.slice(0, cap);
   if (selected.length < cap && currentDue) selected.push(latest);
-  else if (selected.length < cap && currentMissing) selected.push(latest);
+  if (selected.length < cap) selected.push(...olderMissing.slice(0, cap - selected.length));
+  if (selected.length < cap && currentMissing) selected.push(latest);
   return selected.map((hourStart) => ({hourStart, priority: hourStart === latest ? 0 : -1}));
 }
 
