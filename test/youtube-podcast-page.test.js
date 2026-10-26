@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import vm from 'node:vm';
 
 class El {
   constructor(tag) {
@@ -66,6 +67,7 @@ const {
   renderPodcastReader,
   podcastReaderFloatVisibility,
   podcastStatusLabel,
+  podcastExitAction,
 } = await import(pathToFileURL(path.join(pageDir, 'youtube-podcasts.js')).href);
 process.on('exit', () => rmSync(pageDir, { recursive: true, force: true }));
 
@@ -303,11 +305,13 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   const root = new El('div');
   let mode = '';
   let back = 0;
+  let exited = 0;
   renderPodcastReader(root, {
     episode: pending,
     mode: 'speed',
     onMode: (next) => { mode = next; },
     onBack: () => { back += 1; },
+    onExit: () => { exited += 1; },
   });
   assert.match(textOf(root), /速读整理中/);
   assert.equal(textOf(root).includes('正文完整'), false);
@@ -317,8 +321,16 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.equal(floatBar['aria-hidden'], 'true');
   assert.equal(floatBar.className.includes('is-shown'), false);
   assert.equal(textOf(floatBar).includes('打开 YouTube'), false);
+  assert.equal(textOf(floatBar).includes('退出'), false);
   assert.match(textOf(floatBar), /较早的一集/);
   assert.equal(findAll(floatBar, (node) => node.textContent === '速读版').length, 1);
+  const exitBar = findAll(root, (node) => node.className === 'podcast-reader-exit')[0];
+  const exitButton = findAll(exitBar, (node) => node.textContent === '退出')[0];
+  assert.equal(exitButton.tagName, 'button');
+  assert.equal(findAll(root, (node) => node.textContent === '退出').length, 1);
+  exitButton.listeners.click();
+  assert.equal(exited, 1);
+  assert.equal(back, 0);
   findAll(root, (node) => node.textContent === '‹ 返回')[0].listeners.click();
   assert.equal(back, 1);
   findAll(root, (node) => node.textContent === '全文')[0].listeners.click();
@@ -353,4 +365,54 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 362, shown: true, narrow: true, revealAfter: 180 }), true);
   assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 100, shown: true, narrow: true, revealAfter: 180 }), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 300, shown: false, narrow: false, revealAfter: 180 }), false);
+  const css = readFileSync(path.join(publicDir, 'styles.css'), 'utf8');
+  const exitRule = css.match(/\.podcast-reader-exit \{[^}]+\}/)[0];
+  assert.match(exitRule, /position:\s*fixed;/);
+  assert.match(exitRule, /bottom:\s*0;/);
+  assert.match(css, /body\[data-podcast-episode="1"\] \.bottom-tab/);
+  assert.match(css, /body\[data-podcast-episode="1"\] main \{[^}]*padding-bottom:\s*calc\(60px \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /@media \(max-width: 720px\) \{[^]*?\.podcast-reader-float \{[^}]*position:\s*fixed;/);
+  assert.match(css, /@media \(min-width: 1200px\) \{\s*\.podcast-reader-exit \{ left: var\(--side-nav\); \}/);
+});
+
+test('podcast exit returns to the list that opened the episode', () => {
+  assert.deepEqual(podcastExitAction('#podcasts'), { route: 'podcasts', historyBack: true });
+  assert.deepEqual(podcastExitAction('#podcasts?channel=odd-lots'), { route: 'podcasts?channel=odd-lots', historyBack: true });
+  assert.deepEqual(podcastExitAction('#podcasts?pane=channels'), { route: 'podcasts?pane=channels', historyBack: true });
+  assert.deepEqual(podcastExitAction(''), { route: 'podcasts', historyBack: false });
+  assert.deepEqual(podcastExitAction('#feed'), { route: 'podcasts', historyBack: false });
+  assert.deepEqual(podcastExitAction('#podcast/abcdefghijk'), { route: 'podcasts', historyBack: false });
+
+  const app = readFileSync(path.resolve('apps/web/public/app.js'), 'utf8');
+  const source = app.match(/(?:async )?function leavePodcastEpisode\([^]*?\n\}/);
+  assert.ok(source);
+  const calls = [];
+  const history = { state: { aiCenterPrevious: '#podcasts?channel=odd-lots' }, back() { calls.push('back'); } };
+  const state = { trail: ['#podcasts?channel=odd-lots'] };
+  const context = vm.createContext({
+    history,
+    state,
+    podcastExitAction,
+    setView: (...args) => calls.push(args),
+  });
+  vm.runInContext(source[0], context);
+  context.leavePodcastEpisode();
+  assert.deepEqual(calls, ['back']);
+  assert.equal(state.trail.length, 0);
+  history.state = { aiCenterPrevious: '#feed' };
+  state.trail = ['#feed'];
+  context.leavePodcastEpisode();
+  assert.equal(calls[1][0], 'podcasts');
+  assert.equal(calls[1][1].back, true);
+  history.state = null;
+  state.trail = [];
+  context.leavePodcastEpisode();
+  assert.equal(calls[2][0], 'podcasts');
+  assert.equal(calls[2][1].back, true);
+  history.state = null;
+  state.trail = ['#podcasts?pane=channels'];
+  context.leavePodcastEpisode();
+  assert.equal(calls[3][0], 'podcasts?pane=channels');
+  assert.equal(calls[3][1].back, true);
+  assert.equal(state.trail.length, 0);
 });
