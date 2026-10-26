@@ -167,11 +167,27 @@ export function readBambooUsage(directory, at = Date.now()) {
   return { day: stamp.day, hour: stamp.hour, count: usage.count, hourCount };
 }
 
+// null, undefined, and 0 mean no local daily cap. A positive integer is an explicit cap.
+// Anything else is invalid: the counter denies the call, and the usage page shows no cap.
+function admissionDailyCap(max) {
+  if (max === null || max === undefined) return { mode: 'unlimited', limit: null };
+  const number = Number(max);
+  if (number === 0) return { mode: 'unlimited', limit: null };
+  if (Number.isInteger(number) && number > 0) return { mode: 'capped', limit: number };
+  return { mode: 'invalid', limit: null };
+}
+
+function displayedBambooDailyLimit(limit) {
+  const cap = admissionDailyCap(limit);
+  return cap.mode === 'capped' ? cap.limit : null;
+}
+
 // Read-only window for the usage page. Newest Shanghai day first.
 // Missing files are zero. A file that cannot be parsed is null, not a new write.
-export function listBambooDailyUsage({ directory, at = Date.now(), days = BAMBOO_DAILY_USAGE_DAYS, limit = 7000 } = {}) {
+// limit null means the local daily cap is off.
+export function listBambooDailyUsage({ directory, at = Date.now(), days = BAMBOO_DAILY_USAGE_DAYS, limit = null } = {}) {
   const span = Number.isInteger(days) && days >= 1 && days <= 31 ? days : BAMBOO_DAILY_USAGE_DAYS;
-  const cap = Number.isInteger(limit) && limit >= 0 ? limit : 7000;
+  const cap = displayedBambooDailyLimit(limit);
   const today = shanghaiUsageStamp(at).day;
   const rows = [];
   for (let offset = 0; offset < span; offset += 1) {
@@ -194,11 +210,12 @@ export function resolveBambooDailySpread(env = process.env) {
   return String(env?.AI_CENTER_BAMBOO_DAILY_SPREAD ?? '').trim().toLowerCase() === 'hourly' ? 'hourly' : 'fifo';
 }
 
-// One admission call. Returns ok:false without writing when the daily cap,
-// or the current hour's share, is already used.
+// One admission call. Returns ok:false without writing when an explicit daily cap,
+// or that cap's current hour share, is already used. null, undefined, and 0 do not cap.
+// Hourly spread only divides a positive daily cap; it does not invent a ceiling.
 export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date.now(), rename = renameSync } = {}) {
   const stamp = shanghaiUsageStamp(at);
-  const limit = Number(max);
+  const cap = admissionDailyCap(max);
   const denied = (reason, usage, allowance = null, category = '') => ({
     ok: false,
     reason,
@@ -210,7 +227,7 @@ export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date
     category,
   });
   if (!directory || typeof directory !== 'string') return denied('daily', emptyUsage());
-  if (!Number.isInteger(limit) || limit < 0) return denied('daily', emptyUsage());
+  if (cap.mode === 'invalid') return denied('daily', emptyUsage());
   const filePath = bambooUsagePath(directory, stamp.day);
   const lockPath = `${filePath}.lock`;
   try {
@@ -218,14 +235,16 @@ export function takeBambooUsageSlot({ directory, max, spread = 'fifo', at = Date
       const usage = readUsage(filePath);
       const hourCount = usage.hour === stamp.hour ? usage.hourCount : 0;
       const current = { count: usage.count, hour: stamp.hour, hourCount };
-      if (current.count >= limit) return denied('daily', current);
-      if (spread === 'hourly') {
-        const allowance = hourlyAllowance({
-          max: limit,
-          countBeforeHour: current.count - hourCount,
-          hour: stamp.hour,
-        });
-        if (hourCount >= allowance) return denied('hourly', current, allowance);
+      if (cap.mode === 'capped') {
+        if (current.count >= cap.limit) return denied('daily', current);
+        if (spread === 'hourly') {
+          const allowance = hourlyAllowance({
+            max: cap.limit,
+            countBeforeHour: current.count - hourCount,
+            hour: stamp.hour,
+          });
+          if (hourCount >= allowance) return denied('hourly', current, allowance);
+        }
       }
       const next = {
         date: stamp.day,

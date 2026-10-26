@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-26-bamboo-daily-unlimited.md`：信息流准入不再默认每天停在 7000。`AI_CENTER_BAMBOO_DAILY_MAX` 未设置、空、`0` 或 `unlimited` 时不封顶；正整数仍按上海日停。计数照旧。供应商 429 和显式正整数下的小时均分仍在。不新增 migration。若 `.env` 写着 7000，删掉或改成 0，然后同时重启 Web 和 Worker。
+
 - `progress/2026-10-26-podcast-toc-chapter-dialogue.md`：单集阅读有至少两个标题时显示目录。宽屏固定在左侧，窄屏用「目录」打开侧栏，不占首屏。底栏去掉旧的 `podcast-reader-exit`。新整理先由 Flash 一次写各章总结，再由 Gemma 26B 按章排对话；旧稿不自动重写。重跑用 `scripts/rerun-youtube-chapter-articles.mjs`。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-26-podcast-reader-bar.md`：单集阅读窄屏底栏改成信息流同款。四格 `.reader-mobile-bar.is-quad`，透明键、品牌色图标和 12px 竖排文案，返回键是「返回播客」。宽屏不另放一条大按钮。离开仍回到进来时的播客列表。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。

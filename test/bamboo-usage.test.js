@@ -18,7 +18,7 @@ import { createBambooUsageView } from '../packages/domain/src/bamboo-usage-view.
 import { BambooDailyUsageDaySchema } from '../packages/contracts/src/model-usage.js';
 import { formatBambooDailySummary, openModelUsageDialog } from '../apps/web/public/model-usage.js';
 import { createAiCenterServer } from '../apps/web/src/server.js';
-import { createFeedFilter, resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
+import { createFeedFilter, resolveBambooDailyMax, resolveFeedFilterConfig } from '../packages/domain/src/feed-filter.js';
 
 const moduleUrl = pathToFileURL(fileURLToPath(new URL('../packages/domain/src/bamboo-usage.js', import.meta.url))).href;
 const hour0 = Date.parse('2026-10-18T16:00:00.000Z');
@@ -291,6 +291,71 @@ test('feed admission hourly mode does not call Bamboo after the hour share is us
   }
 });
 
+test('a stored count of 7000 still admits when the daily max is unset', async () => {
+  assert.equal(resolveBambooDailyMax({}), null);
+  assert.equal(resolveBambooDailyMax({ AI_CENTER_BAMBOO_DAILY_MAX: '0' }), null);
+  assert.equal(resolveBambooDailyMax({ AI_CENTER_BAMBOO_DAILY_MAX: 'unlimited' }), null);
+  assert.equal(resolveBambooDailyMax({ AI_CENTER_BAMBOO_DAILY_MAX: '7000' }), 7000);
+  const directory = temporaryDirectory();
+  try {
+    writeFileSync(bambooUsagePath(directory, '20261019'), JSON.stringify({ count: 7000, hour: 0, hourCount: 1 }));
+    const open = takeBambooUsageSlot({ directory, max: null, spread: 'hourly', at: hour0 });
+    assert.equal(open.ok, true);
+    assert.equal(open.count, 7001);
+    assert.equal(takeBambooUsageSlot({ directory, max: 0, at: hour0 }).ok, true);
+    const capped = takeBambooUsageSlot({ directory, max: 7000, at: hour0 });
+    assert.equal(capped.ok, false);
+    assert.equal(capped.reason, 'daily');
+    assert.equal(takeBambooUsageSlot({ directory, max: -1, at: hour0 }).reason, 'daily');
+    assert.equal(readBambooUsage(directory, hour0).count, 7002);
+    let calls = 0;
+    const filter = createFeedFilter({
+      usageDirectory: directory,
+      config: {
+        ...resolveFeedFilterConfig({
+          AI_CENTER_JEV_ENABLED: 'false',
+          AI_CENTER_CLASSIFICATION_PROVIDER: 'bamboo',
+          AI_CENTER_FEED_FILTER: 'enforce',
+        }),
+        now: () => hour0,
+      },
+      client: {
+        available: () => true,
+        async evaluate() {
+          calls += 1;
+          return {
+            model: 'startlux-decision-27b-autothink',
+            answers: {
+              reading_value: { type: 'noul', noul: 0.9 },
+              advertising: { type: 'noul', noul: 0.1 },
+              specific_content: { type: 'noul', noul: 0.9 },
+              sufficient_information: { type: 'noul', noul: 0.9 },
+              missing_context: { type: 'noul', noul: 0.05 },
+            },
+          };
+        },
+      },
+    });
+    const result = await filter.evaluate({
+      provider: 'x',
+      sourceExternalId: 'x:home:following',
+      originalText: '关注流里的一条完整更新，包含订单金额和交付日期。',
+      item: {
+        provider: 'x',
+        title: '订单',
+        body: '关注流里的一条完整更新，包含订单金额和交付日期。',
+        sourceExternalId: 'x:home:following',
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.metadata.filterReason, 'all-three');
+    assert.equal(result.metadata.filterErrorCode, '');
+    assert.equal(readBambooUsage(directory, hour0).count, 7003);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('the usage page reads each Shanghai day without taking another slot', () => {
   assert.equal(shiftShanghaiDay('20261001', -1), '20260930');
   assert.equal(shiftShanghaiDay('20260301', -1), '20260228');
@@ -318,10 +383,15 @@ test('the usage page reads each Shanghai day without taking another slot', () =>
     assert.equal(JSON.stringify(rows).includes('provider'), false);
     assert.throws(() => BambooDailyUsageDaySchema.parse({ ...rows[0], provider: 'bamboo' }));
     const view = createBambooUsageView({ directory, env: {}, now: () => hour0, days: 3 });
-    assert.equal(view.listDays()[0].limit, 7000);
-    assert.equal(createBambooUsageView({ directory, env: { AI_CENTER_BAMBOO_DAILY_MAX: 'nope' }, now: () => hour0, days: 1 }).listDays()[0].limit, 7000);
+    assert.equal(view.listDays()[0].limit, null);
+    assert.equal(createBambooUsageView({ directory, env: { AI_CENTER_BAMBOO_DAILY_MAX: '0' }, now: () => hour0, days: 1 }).listDays()[0].limit, null);
+    assert.equal(createBambooUsageView({ directory, env: { AI_CENTER_BAMBOO_DAILY_MAX: 'unlimited' }, now: () => hour0, days: 1 }).listDays()[0].limit, null);
+    assert.equal(createBambooUsageView({ directory, env: { AI_CENTER_BAMBOO_DAILY_MAX: 'nope' }, now: () => hour0, days: 1 }).listDays()[0].limit, null);
+    assert.equal(createBambooUsageView({ directory, env: { AI_CENTER_BAMBOO_DAILY_MAX: '8000' }, now: () => hour0, days: 1 }).listDays()[0].limit, 8000);
     const text = formatBambooDailySummary(rows);
     assert.match(text, /^Bamboo 每天调用（信息流准入）\n今天 1,234 \/ 7,000\n10月18日 50 \/ 7,000\n10月17日 无法读取 \/ 7,000$/);
+    assert.equal(formatBambooDailySummary([{ day: today, count: 7001, limit: null }]), 'Bamboo 每天调用（信息流准入）\n今天 7,001 / 不限');
+    assert.equal(BambooDailyUsageDaySchema.parse({ day: today, count: 7001, limit: null }).limit, null);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -397,7 +467,7 @@ test('model usage HTTP returns Bamboo days and does not increment the counter', 
     const body = await response.json();
     assert.deepEqual(body.records, []);
     assert.equal(body.bambooDays.length, 14);
-    assert.deepEqual(body.bambooDays[0], { day: stamp.day, count: 42, limit: 7000 });
+    assert.deepEqual(body.bambooDays[0], { day: stamp.day, count: 42, limit: null });
     assert.deepEqual(Object.keys(body.bambooDays[0]).sort(), ['count', 'day', 'limit']);
     assert.equal(JSON.stringify(body).includes('should-not-leak'), false);
     assert.equal(JSON.stringify(body).includes('bamboo-usage-'), false);
