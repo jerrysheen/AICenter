@@ -48,7 +48,7 @@ import { commitReportHistory, reportListHash, reportViewOwnsScroll, stackReportN
 import { decodeHtmlEntities } from './html-text.js?v=dev';
 import { markBulkOfficialNotices, newsDayLabel, newsEffectiveLabel, prioritizeReadableFeedRows, renderNewsList, reportItemTime } from './news-list.js?v=dev';
 import { createAuthorView } from './author-view.js?v=dev';
-import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, renderYoutubePodcasts, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
+import { appendPartialArticle, episodeArticleMessage, foldedOriginal, partialArticleLabel, PODCAST_PAGE_SIZE, renderPodcastLibrary, renderPodcastReader, YOUTUBE_ARTICLE_POLL_SLOW_MS, youtubeArticlePollDelay, youtubeArticleRequestPath, youtubeReaderScopeLabel } from './youtube-podcasts.js?v=dev';
 import { xPostHasVideo, xVideoArticleReady, xVideoArticleRequestPath, xVideoReaderScopeLabel, xVideoTweetId } from './x-video-article.js?v=dev';
 import { createFeedTaggingLoader, FEED_TAG_QUERY_PATH } from './feed-tagging.js?v=dev';
 import { articleAuthorFields, articleAuthorTarget, feedSearchCountText, feedSearchExcerpt, feedSearchMoreText, feedSearchPath, feedSearchPhase, feedSearchQueryReady, highlightParts, linkAbortSignal, socialArticleBodyPending } from './feed-search.js?v=dev';
@@ -91,7 +91,7 @@ function routeLabel(value) {
   if (route.startsWith('market/global')) return '全球行情';
   if (route.startsWith('hardware/series/')) return '报价详情';
   if (route.startsWith('inspire/tasks')) return '任务列表';
-  return ({ sources: '总览', feed: '信息流', market: '股票', report: '简报',
+  return ({ sources: '总览', feed: '信息流', market: '股票', report: '简报', podcasts: '播客', podcast: '播客',
     tools: '工具', knowledge: '知识库', settings: '设备与连接', inspire: '灵感', ask: '问答记录',
     article: '文章', source: '信源详情' })[route.split('/')[0]] || '总览';
 }
@@ -118,6 +118,10 @@ const state = {
   session: null,
   translationQueued: {},
   youtubeEpisodes: {},
+  podcastPane: 'episodes',
+  podcastChannel: '',
+  podcastShown: PODCAST_PAGE_SIZE,
+  podcastReaderMode: 'full',
   loginAvailable: false,
   posts: [],
   pairing: null,
@@ -381,7 +385,7 @@ const pageKinds = {
   automation: { nav: 'tools', title: '自动任务配置' },
   publish: { nav: 'tools', title: '快速发布' },
   xfocus: { nav: 'feed', title: '推荐记录' },
-  youtube: { nav: 'sources', title: 'YouTube 播客' },
+  podcast: { nav: 'podcasts', title: '播客' },
 };
 
 const hubLanes = [
@@ -396,6 +400,7 @@ const overviewViews = ['sources', 'feed', 'market', 'report'];
 
 const navItems = [
   { id: 'sources', label: '总览', icon: 'house' },
+  { id: 'podcasts', label: '播客', icon: 'headphones' },
   { id: 'inspire', label: '灵感', icon: 'lightbulb' },
   { id: 'ask', label: '问答', icon: 'message-circle' },
   { id: 'assets', label: '资产', icon: 'wallet' },
@@ -412,6 +417,7 @@ const viewCopy = {
   knowledge: { title: '知识库', subtitle: '可长期复用的规范内容' },
   ask: { title: '问答', subtitle: '研究记录，可回溯也可继续' },
   report: { title: '简报', subtitle: '小时更新与日报精选，信息在前，依据在后' },
+  podcasts: { title: '播客', subtitle: '播客整理成的中文长文' },
   quant: { title: '量化实验室', subtitle: 'Qlib 研究基线，不连接真实交易' },
   settings: { title: '设备与连接', subtitle: '信源、任务、自动化和配对' },
   page: { title: '详情', subtitle: '' },
@@ -423,7 +429,7 @@ const elements = Object.fromEntries([
   'unpaired-message', 'unpaired-hint', 'unpaired-actions', 'login-form', 'login-username', 'login-password', 'login-message', 'login-submit',
   'exit-to-pairing', 'retry-session', 'device-repair-panel', 'restart-pairing', 'request-process-restart', 'authorized-content',
   'authorized-feed', 'page-title', 'page-subtitle', 'post-form', 'post-title', 'post-body',
-  'form-message', 'feed', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
+  'form-message', 'feed', 'podcast-root', 'feed-count', 'metrics-panel', 'metric-devices', 'metric-opens',
   'metric-published', 'metric-details', 'device-list', 'post-dialog', 'dialog-title',
   'dialog-body', 'dialog-translation', 'dialog-tags', 'dialog-source', 'dialog-save', 'dialog-cite', 'dialog-translate', 'dialog-time', 'dialog-notice', 'dialog-language', 'toast', 'channel-tabs',
   'platform-filters', 'follow-toolbar', 'bilibili-toolbar', 'bilibili-feed-status', 'bilibili-import-form', 'bilibili-url', 'bilibili-import', 'bilibili-more', 'x-toolbar', 'x-more', 'x-translate-bar', 'x-feed-status', 'x-translate-status', 'x-feed-tabs', 'x-refresh', 'x-translate', 'x-tag', 'x-focus-open', 'xueqiu-toolbar', 'xueqiu-feed-tabs', 'xueqiu-feed-status', 'xueqiu-action-bar', 'xueqiu-action-status', 'xueqiu-refresh', 'trendforce-toolbar', 'trendforce-feed-status', 'trendforce-more', 'trendforce-action-bar', 'trendforce-action-status', 'trendforce-refresh', 'media-toolbar', 'media-channel-tabs', 'quote-filters', 'quote-list', 'tool-grid', 'strategy-inspect',
@@ -1015,6 +1021,7 @@ function isPrimaryNavActive(navId, view) {
     return navId === mapped;
   }
   if (navId === 'sources') return view === 'sources' || view === 'feed' || view === 'market' || view === 'report';
+  if (navId === 'podcasts') return view === 'podcasts';
   if (navId === 'tools') return view === 'tools' || view === 'knowledge' || view === 'settings' || view === 'quant';
   return navId === view;
 }
@@ -1031,6 +1038,7 @@ function primaryNavActivation(navId) {
 }
 
 function resolveView(name) {
+  if (name === 'podcasts') return 'podcasts';
   if (name === 'trade') return 'market';
   if (name === 'account') return 'settings';
   if (pageKinds[name]) return 'page';
@@ -1066,10 +1074,13 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
     ? 'events'
     : '';
   const stockBoard = view === 'market' && marketPane === 'stocks' ? marketStockPath(rest) : '';
+  const podcastQuery = new URLSearchParams(queryPart);
+  const podcastPane = view === 'podcasts' && podcastQuery.get('pane') === 'channels' ? 'channels' : 'episodes';
+  const podcastChannel = view === 'podcasts' ? String(podcastQuery.get('channel') || '').trim() : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
     selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab, feedTab,
-    stockBoard,
+    stockBoard, podcastPane, podcastChannel,
   };
 }
 
@@ -1174,8 +1185,10 @@ function returnTarget() {
   const view = document.body.dataset.view;
   if (view === 'page') {
     if(state.pageKind==='hardware' && state.pageId.startsWith('series/'))return 'market/global/hardware';
-    return normalizeRoute(state.navigationFrom || history.state?.aiCenterPrevious || state.trail.at(-1)
-      || (state.pageKind === 'article' ? 'feed' : state.pageKind === 'source' && state.pageId === 'bilibili' ? 'tools' : 'sources'));
+    const pageFallback = state.pageKind === 'article' ? 'feed'
+      : state.pageKind === 'podcast' ? 'podcasts'
+        : state.pageKind === 'source' && state.pageId === 'bilibili' ? 'tools' : 'sources';
+    return normalizeRoute(state.navigationFrom || history.state?.aiCenterPrevious || state.trail.at(-1) || pageFallback);
   }
   if (view === 'sources') return 'sources';
   if (view === 'ask') return 'ask';
@@ -1226,7 +1239,7 @@ function syncHeaderSearch() {
     if (document.activeElement !== elements['global-search']) elements['global-search'].value = query;
   }
   if (elements['nav-back']) {
-    const showBack = document.body.dataset.view === 'page'
+    const showBack = (document.body.dataset.view === 'page' && state.pageKind !== 'podcast')
       || ['knowledge', 'quant', 'settings'].includes(view)
       || (document.body.dataset.view === 'settings' && state.settingsPane === 'connections')
       || (document.body.dataset.view === 'sources' && state.overviewPane !== 'home')
@@ -1239,9 +1252,34 @@ function syncHeaderSearch() {
   }
 }
 
+function aliasPodcastRoute(route) {
+  const raw = String(route || '');
+  const queryIndex = raw.indexOf('?');
+  const path = queryIndex >= 0 ? raw.slice(0, queryIndex) : raw;
+  const query = queryIndex >= 0 ? raw.slice(queryIndex) : '';
+  if (path === 'youtube') return `podcasts${query}`;
+  if (path.startsWith('youtube/')) {
+    const id = path.slice('youtube/'.length);
+    return /^[A-Za-z0-9_-]{6,}$/.test(id) ? `podcast/${id}` : 'podcasts';
+  }
+  const article = path.match(/^article\/youtube:([A-Za-z0-9_-]{6,})$/i);
+  if (article) return `podcast/${article[1]}`;
+  return raw;
+}
+
+function podcastsHash(pane = state.podcastPane, channel = state.podcastChannel) {
+  const params = new URLSearchParams();
+  if (pane === 'channels') params.set('pane', 'channels');
+  else if (channel) params.set('channel', channel);
+  const query = params.toString();
+  return query ? `#podcasts?${query}` : '#podcasts';
+}
+
 function setView(name, options = {}) {
   persistTaskDraftsFromDom();
   const incoming = normalizeRoute(options.fromPrimaryNav ? primaryNavTarget(name) : name);
+  const aliased = aliasPodcastRoute(incoming);
+  if (aliased !== incoming) return setView(aliased, options);
   const requested = incoming === 'hardware' ? 'market/global/hardware' : incoming;
   const parsed = parseLocation(requested);
   const view = parsed.view;
@@ -1282,6 +1320,18 @@ function setView(name, options = {}) {
     if (parsed.feedTab === 'author' && state.authorView !== false) state.channel = 'author';
     else if (state.channel === 'author') state.channel = 'all';
   }
+  if (view === 'podcasts') {
+    const nextPane = parsed.podcastPane || 'episodes';
+    const nextChannel = nextPane === 'channels' ? state.podcastChannel : (parsed.podcastChannel || '');
+    if (state.podcastPane !== nextPane || (nextPane !== 'channels' && state.podcastChannel !== nextChannel)) {
+      state.podcastShown = PODCAST_PAGE_SIZE;
+    }
+    state.podcastPane = nextPane;
+    if (nextPane !== 'channels') state.podcastChannel = nextChannel;
+  }
+  if (view === 'page' && parsed.pageKind === 'podcast' && previousPageId !== parsed.pageId) {
+    state.podcastReaderMode = 'full';
+  }
   if (state.bootstrapped && (previous !== view || previousPageKind !== state.pageKind)) {
     logBehavior('nav.tab', { view, page: view === 'page' ? String(state.pageKind || '') : '' });
   }
@@ -1290,7 +1340,9 @@ function setView(name, options = {}) {
     : 0;
   const newArticle = view === 'page' && state.pageKind === 'article'
     && (previousPageKind !== 'article' || previousPageId !== state.pageId) && !options.fromHistory;
-  if (newArticle) viewScrollY.page = 0;
+  const newPodcast = view === 'page' && state.pageKind === 'podcast'
+    && (previousPageKind !== 'podcast' || previousPageId !== state.pageId) && !options.fromHistory;
+  if (newArticle || newPodcast) viewScrollY.page = 0;
   const openingQuote = openingQuotePage({
     view,
     pageKind: state.pageKind,
@@ -1408,6 +1460,7 @@ function setView(name, options = {}) {
   }
   if (view === 'quant') renderQuantPage().catch((error) => showToast(error.message));
   if (view === 'settings') renderSettingsHub();
+  if (view === 'podcasts') renderPodcastZone();
   if (view === 'page') renderPage();
   renderAskLiveUi();
   renderReferenceUi();
@@ -1429,7 +1482,9 @@ function setView(name, options = {}) {
                 ? reportHash()
                 : view === 'feed' && state.channel === 'author'
                   ? '#feed?tab=author'
-                  : `#${view}`;
+                  : view === 'podcasts'
+                    ? podcastsHash()
+                    : `#${view}`;
   if (location.hash !== nextHash) {
     const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
       ...(!options.fromHistory && !options.back && !options.replace ? { aiCenterPrevious: previousHash } : {}) };
@@ -1458,7 +1513,7 @@ function setView(name, options = {}) {
   else if (view === 'feed' && leaving) restoreViewScroll('feed');
   else if (openingQuote) { scrollPageToTop(); releaseViewScroll = false; }
   else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) { restoreViewScroll(view); releaseViewScroll = false; }
-  else if (newArticle) window.scrollTo(0, 0);
+  else if (newArticle || newPodcast) window.scrollTo(0, 0);
   persistFeedBrowseState();
   syncAskKeyboard();
   } finally {
@@ -1607,6 +1662,7 @@ async function reloadCurrentView({ forceShell = false } = {}) {
       tasks.push(loadDividendInspection());
     }
     if (view === 'report') tasks.push(ensureReportPane());
+    if (view === 'podcasts' || (view === 'page' && state.pageKind === 'podcast')) tasks.push(reloadPodcasts());
     if (view === 'settings' && state.session.role === 'desktop') {
       tasks.push(loadPairing());
       tasks.push(loadMetrics());
@@ -5558,6 +5614,7 @@ function authorView() {
       api,
       openAuthor,
       openArticle,
+      openPodcasts: openPodcastChannel,
     });
   }
   return authorUi;
@@ -5566,6 +5623,11 @@ function authorView() {
 function syncAuthorListWindow() {
   if (!authorUi) return;
   authorUi.syncWindow?.();
+}
+
+function openPodcastChannel(author) {
+  const creatorId = String(author?.authorId || '').replace(/^youtube:/i, '').trim();
+  setView(creatorId ? `podcasts?channel=${encodeURIComponent(creatorId)}` : 'podcasts');
 }
 
 function openAuthor(authorId) {
@@ -5579,6 +5641,13 @@ function openArticle(post) {
   logBehavior('article.open', { id: String(post.id || post.resourceId || '') });
   if (post.kind === 'reading' || post.resourceType === 'reading-node') {
     setView(String(post.reportHref || 'report').replace(/^#/, ''));
+    return;
+  }
+  const videoId = youtubeEpisodeId(post);
+  if (videoId) {
+    rememberRecentItem(post);
+    mediaReaderSession.clear();
+    openPage('podcast', videoId);
     return;
   }
   rememberRecentItem(post);
@@ -7317,7 +7386,7 @@ function renderStaticSourceCatalog() {
         }),
       );
       copy.addEventListener('click', () => {
-        if (source.id === 'youtube') openPage('youtube');
+        if (source.id === 'youtube') setView('podcasts');
         else openPage('source', source.id);
       });
       const more = document.createElement('button');
@@ -9740,9 +9809,240 @@ function renderPage() {
   else if (kind === 'automation') renderAutomationPage();
   else if (kind === 'publish') renderPublishPage();
   else if (kind === 'xfocus') renderXFocusPage();
-  else if (kind === 'youtube') renderYoutubePodcasts(root, { api, videoId: state.pageId, showToast });
+  else if (kind === 'podcast') renderPodcastEpisodePage();
   else root.replaceChildren(Object.assign(document.createElement('p'), { className: 'empty-state', textContent: '找不到这个页面。' }));
   syncHeaderSearch();
+}
+
+let podcastCatalog = null;
+const podcastReadIds = new Set();
+
+function podcastFocusPost(episode) {
+  return {
+    id: `youtube:${episode.videoId}`,
+    resourceId: episode.contentItemId || '',
+    contentItemId: episode.contentItemId || '',
+    resourceType: episode.contentItemId ? 'content-item' : '',
+    platform: 'youtube',
+    kind: 'social',
+    title: episode.title || episode.originalTitle || episode.videoId || '',
+    sourceUrl: episode.sourceUrl || '',
+    publishedAt: episode.publishedAt || 0,
+    author: episode.creatorName || '',
+    isRead: Boolean(episode.isRead),
+    isSaved: Boolean(episode.isSaved),
+  };
+}
+
+function catalogEpisode(videoId) {
+  for (const creator of podcastCatalog?.creators || []) {
+    const found = (creator.episodes || []).find((episode) => episode.videoId === videoId);
+    if (found) return { ...found, creatorId: found.creatorId || creator.id, creatorName: found.creatorName || creator.name || creator.id };
+  }
+  return null;
+}
+
+function notePodcastRead(videoId) {
+  if (!videoId) return;
+  podcastReadIds.add(videoId);
+  for (const creator of podcastCatalog?.creators || []) {
+    for (const episode of creator.episodes || []) {
+      if (episode.videoId === videoId) episode.isRead = true;
+    }
+  }
+  const cached = state.youtubeEpisodes[videoId];
+  if (cached) cached.isRead = true;
+}
+
+function markPodcastEpisodeRead(episode) {
+  if (!episode?.videoId || episode.missing || episode.isRead) return;
+  notePodcastRead(episode.videoId);
+  if (!episode.contentItemId) return;
+  markFeedItemRead({
+    id: `youtube:${episode.videoId}`,
+    platform: 'youtube',
+    resourceType: 'content-item',
+    resourceId: episode.contentItemId,
+    contentItemId: episode.contentItemId,
+    title: episode.title || '',
+    isRead: false,
+  });
+}
+
+function applyPodcastCatalog(payload) {
+  for (const creator of payload?.creators || []) {
+    for (const episode of creator.episodes || []) {
+      if (podcastReadIds.has(episode.videoId)) episode.isRead = true;
+    }
+  }
+  podcastCatalog = payload;
+}
+
+function renderPodcastZone() {
+  const root = elements['podcast-root'];
+  if (!root) return;
+  if (!podcastCatalog) {
+    renderViewState(root, { kind: 'loading', title: '正在读取播客…', message: '正在读取单集列表。' });
+    loadPodcastCatalog().catch((error) => {
+      if (document.body.dataset.view !== 'podcasts') return;
+      renderViewState(root, { kind: 'error', title: '播客读取失败', message: error instanceof Error ? error.message : '请稍后再试' });
+    });
+    return;
+  }
+  renderPodcastLibrary(root, {
+    payload: podcastCatalog,
+    pane: state.podcastPane,
+    channel: state.podcastChannel,
+    shown: state.podcastShown,
+    focused: (episode) => itemIsFocused(podcastFocusPost(episode)),
+    starIcon: icon('star'),
+    onOpen: (episode) => openPage('podcast', episode.videoId),
+    onStar: (episode) => toggleFocus(podcastFocusPost(episode).id, () => renderPodcastZone(), podcastFocusPost(episode)),
+    onPane: (pane) => {
+      if (pane === 'channels') setView(state.podcastChannel ? `podcasts?pane=channels` : 'podcasts?pane=channels');
+      else setView(state.podcastChannel ? `podcasts?channel=${encodeURIComponent(state.podcastChannel)}` : 'podcasts');
+    },
+    onChannel: (creatorId) => setView(`podcasts?channel=${encodeURIComponent(creatorId)}`),
+    onClearChannel: () => setView('podcasts'),
+    onMore: () => {
+      state.podcastShown += PODCAST_PAGE_SIZE;
+      renderPodcastZone();
+    },
+  });
+}
+
+async function loadPodcastCatalog() {
+  const payload = await api('/api/v1/youtube-podcasts');
+  applyPodcastCatalog(payload);
+  if (document.body.dataset.view === 'podcasts') renderPodcastZone();
+  return payload;
+}
+
+async function reloadPodcasts() {
+  podcastCatalog = null;
+  if (state.pageKind === 'podcast' && state.pageId) delete state.youtubeEpisodes[state.pageId];
+  if (document.body.dataset.view === 'podcasts') {
+    const root = elements['podcast-root'];
+    if (root) renderViewState(root, { kind: 'loading', title: '正在读取播客…', message: '正在读取单集列表。' });
+    await loadPodcastCatalog();
+    return;
+  }
+  if (state.pageKind === 'podcast') renderPodcastEpisodePage();
+}
+
+function renderPodcastEpisodePage({ refresh = true } = {}) {
+  const root = pageRoot();
+  if (!root) return;
+  const id = String(state.pageId || '');
+  if (!/^[A-Za-z0-9_-]{6,}$/.test(id)) {
+    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => setView('podcasts') });
+    return;
+  }
+  const episode = state.youtubeEpisodes[id] || catalogEpisode(id);
+  if (episode?.missing) {
+    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => setView('podcasts') });
+    return;
+  }
+  if (!episode) renderViewState(root, { kind: 'loading', title: '正在读取这一集…', message: '正在读取中文正文。' });
+  else paintPodcastEpisode(root, episode);
+  if (!refresh) return;
+  const ready = youtubeArticleReady(episode);
+  const hasBody = Boolean(String(episode?.body || '').trim());
+  if (!episode || !ready || !hasBody) loadPodcastEpisode(id);
+}
+
+function paintPodcastEpisode(root, episode) {
+  markPodcastEpisodeRead(episode);
+  renderPodcastReader(root, {
+    episode,
+    mode: state.podcastReaderMode === 'speed' ? 'speed' : 'full',
+    starIcon: icon('star'),
+    focused: itemIsFocused(podcastFocusPost(episode)),
+    onBack: () => goBack(),
+    onMode: (mode) => {
+      state.podcastReaderMode = mode === 'speed' ? 'speed' : 'full';
+      paintPodcastEpisode(root, state.youtubeEpisodes[episode.videoId] || episode);
+    },
+    onChannel: (creatorId) => setView(creatorId ? `podcasts?channel=${encodeURIComponent(creatorId)}` : 'podcasts'),
+    onStar: () => toggleFocus(podcastFocusPost(episode).id, () => {
+      if (state.pageKind === 'podcast' && state.pageId === episode.videoId) renderPodcastEpisodePage({ refresh: false });
+    }, podcastFocusPost(episode)),
+  });
+}
+
+function mergePodcastProgress(current, payload, id) {
+  return {
+    ...(current || {}),
+    videoId: payload.videoId || current?.videoId || id,
+    title: payload.title || current?.title || '',
+    originalTitle: payload.originalTitle || current?.originalTitle || '',
+    creatorId: payload.creatorId || current?.creatorId || '',
+    creatorName: payload.creatorName || current?.creatorName || '',
+    status: payload.status || current?.status || '',
+    transcriptSource: payload.transcriptSource || current?.transcriptSource || '',
+    publishedAt: payload.publishedAt || current?.publishedAt || 0,
+    durationSec: payload.durationSec ?? current?.durationSec ?? null,
+    sourceUrl: payload.sourceUrl || current?.sourceUrl || '',
+    isRead: payload.isRead ?? current?.isRead,
+    isSaved: payload.isSaved ?? current?.isSaved,
+    articleStatus: payload.articleStatus || current?.articleStatus || '',
+    article: payload.article || current?.article,
+    partial: payload.partial || null,
+  };
+}
+
+async function loadPodcastEpisode(id) {
+  if (!id || youtubeArticleInflight.has(id)) return;
+  youtubeArticleInflight.add(id);
+  try {
+    const current = state.youtubeEpisodes[id] || catalogEpisode(id);
+    if (youtubeArticleReady(current) && String(current?.body || '').trim()) {
+      state.youtubeEpisodes[id] = current;
+      return;
+    }
+    if (youtubeArticleReady(current)) {
+      const full = await api(youtubeArticleRequestPath(id, { ready: true }));
+      if (full.episode) state.youtubeEpisodes[id] = { ...current, ...full.episode };
+      return;
+    }
+    const payload = await api(youtubeArticleRequestPath(id));
+    if (payload.article?.status === 'ready' || payload.articleStatus === 'ready') {
+      const full = await api(youtubeArticleRequestPath(id, { ready: true }));
+      state.youtubeEpisodes[id] = full.episode || { ...(current || {}), videoId: id, articleStatus: 'ready', article: payload.article };
+      return;
+    }
+    state.youtubeEpisodes[id] = mergePodcastProgress(current, payload, id);
+  } catch (error) {
+    const missing = Number(error?.status) === 404;
+    const known = catalogEpisode(id) || state.youtubeEpisodes[id];
+    if (missing && known && !known.missing) {
+      state.youtubeEpisodes[id] = {
+        ...known,
+        videoId: id,
+        missing: false,
+        article: known.article || { status: 'queued', message: '视频待整理，还没有中文正文。' },
+      };
+    } else if (!state.youtubeEpisodes[id] || missing) {
+      state.youtubeEpisodes[id] = {
+        ...(state.youtubeEpisodes[id] || {}),
+        videoId: id,
+        missing,
+        articleStatus: 'pending',
+        article: { status: 'queued', message: missing ? '没有这一集' : '正在查看整理进度' },
+      };
+    }
+  } finally {
+    youtubeArticleInflight.delete(id);
+    if (document.body.dataset.view === 'page' && state.pageKind === 'podcast' && state.pageId === id) {
+      const episode = state.youtubeEpisodes[id];
+      if (episode?.missing) {
+        renderViewState(pageRoot(), { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => setView('podcasts') });
+      } else if (episode) {
+        paintPodcastEpisode(pageRoot(), episode);
+        if (!youtubeArticleReady(episode)) scheduleYoutubeArticleWatch({ id: `youtube:${id}`, platform: 'youtube' });
+      }
+    }
+  }
 }
 
 function readerLangLabel() {
@@ -10036,7 +10336,12 @@ function scheduleYoutubeArticleWatch(post) {
   if (existing) clearTimeout(existing.timer);
   const timer = setTimeout(() => {
     youtubeArticleWatch.delete(id);
-    if (document.body.dataset.view !== 'page' || state.pageKind !== 'article') return;
+    if (document.body.dataset.view !== 'page') return;
+    if (state.pageKind === 'podcast' && state.pageId === id) {
+      loadPodcastEpisode(id);
+      return;
+    }
+    if (state.pageKind !== 'article') return;
     if (youtubeEpisodeId(state.dialogPost) !== id) return;
     refreshYoutubeArticle(state.dialogPost);
   }, delay);

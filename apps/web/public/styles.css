@@ -3326,7 +3326,7 @@ input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 2px var(--brand); 
   left: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   min-height: calc(var(--bottom-tab) + env(safe-area-inset-bottom));
   padding: 3px 4px max(4px, env(safe-area-inset-bottom));
   background: #fff;
@@ -6154,3 +6154,122 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .podcast-article { line-height: 1.7; }
 .podcast-article h2, .podcast-article h3, .podcast-article h4 { font-size: 15px; margin: 16px 0 8px; }
 .podcast-article p { margin: 0 0 10px; }
+.podcast-zone { padding-bottom: 24px; }
+.podcast-switch {
+  position: sticky;
+  top: calc(var(--title-bar) + env(safe-area-inset-top));
+  z-index: 8;
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  min-height: 44px;
+  margin: 0 calc(var(--page-gutter) * -1);
+  padding: 0 var(--page-gutter);
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--comp-tertiary);
+}
+.podcast-switch button {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--font-tertiary);
+  font-size: 15px;
+}
+.podcast-switch button.is-active {
+  color: var(--font-primary);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--font-primary);
+}
+.podcast-filter, .podcast-count {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  color: var(--font-tertiary);
+  font-size: 13px;
+}
+.podcast-more { min-height: 44px; margin: 8px 0 24px; }
+.podcast-channel {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--comp-tertiary);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.podcast-channel-mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--comp-tertiary);
+  font-weight: 650;
+}
+.podcast-channel-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.podcast-channel-copy strong { font-size: 16px; font-weight: 650; }
+.podcast-channel-copy small {
+  color: var(--font-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.podcast-channel.is-muted strong, .podcast-channel.is-muted small { color: var(--font-tertiary); font-weight: 400; }
+.podcast-reader-bar {
+  position: sticky;
+  top: calc(var(--title-bar) + env(safe-area-inset-top));
+  z-index: 8;
+  margin: 0 calc(var(--page-gutter) * -1);
+  padding: 0 var(--page-gutter) 8px;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--comp-tertiary);
+}
+.podcast-reader-back, .podcast-reader-channel, .podcast-reader-youtube {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  font-size: 14px;
+}
+.podcast-reader-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.podcast-reader-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.podcast-reader-status { color: var(--font-tertiary); font-size: 13px; }
+.podcast-reader-tabs { margin: 0 calc(var(--page-gutter) * -1); }
+.podcast-speed-note {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  color: var(--font-secondary);
+  line-height: 1.7;
+}
+.page-article .podcast-article { font-size: var(--reader-font); line-height: 1.8; }
+.page-article .podcast-article h2,
+.page-article .podcast-article h3,
+.page-article .podcast-article h4 { font-size: 1.15em; line-height: 1.5; margin: 1.4em 0 .6em; }
+.page-article .podcast-article p { margin: 0 0 1em; }
+.podcast-episodes.news-rows .news-row:has(> .focus-btn) { grid-template-columns: minmax(0, 1fr) 44px; }
+.podcast-episodes .news-row-title { font-weight: 700; }
+.podcast-episodes .news-row.is-muted .news-row-title { font-weight: 400; }
+.podcast-episodes .focus-btn,
+.podcast-reader-meta .focus-btn { min-width: 44px; min-height: 44px; }

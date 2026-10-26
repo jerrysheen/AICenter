@@ -95,6 +95,10 @@ function present(row, { withBody = false, now = Date.now(), env = process.env, s
     summary: row.summary || '',
     transcriptSource: row.transcriptSource || '',
     articleStatus: row.articleStatus || '',
+    status: row.status || '',
+    isRead: Boolean(row.isRead),
+    isSaved: Boolean(row.isSaved),
+    creatorName: row.creatorName || row.authorName || '',
     sourceUrl: row.sourceUrl || watchUrl(row.videoId),
     contentItemId: row.contentItemId || '',
     article: articleView(row, now, env, store),
@@ -127,13 +131,20 @@ export function createYoutubePodcastService({ repository, store, configPath, env
   return {
     list(workspaceId) {
       const config = readConfig();
-      const rows = repository.listReady(workspaceId, 200);
+      const names = new Map(config.creators.map((creator) => [creator.id, creator.name]));
+      const followed = new Set(typeof repository.followedCreatorIds === 'function' ? repository.followedCreatorIds(workspaceId) : []);
+      const rows = repository.listReady(workspaceId, 500, { includeFailed: true });
+      const named = (row) => present({
+        ...row,
+        creatorName: names.get(row.creatorId) || row.authorName || '',
+      }, { env, store });
       const configured = config.creators;
       const grouped = configured.map((creator) => ({
         id: creator.id,
         name: creator.name,
         focus: creator.focus,
-        episodes: rows.filter((row) => row.creatorId === creator.id).map((row) => present(row, { env, store })),
+        followed: followed.has(creator.id),
+        episodes: rows.filter((row) => row.creatorId === creator.id).map(named),
       }));
       const known = new Set(configured.map((creator) => creator.id));
       for (const row of rows) {
@@ -143,24 +154,48 @@ export function createYoutubePodcastService({ repository, store, configPath, env
           id: row.creatorId,
           name: row.authorName || row.creatorId,
           focus: '',
-          episodes: rows.filter((item) => item.creatorId === row.creatorId).map((item) => present(item, { env, store })),
+          followed: followed.has(row.creatorId),
+          episodes: rows.filter((item) => item.creatorId === row.creatorId).map(named),
         });
       }
       return { enabled: youtubePodcastsEnabled(env), configError: config.error, creators: grouped };
     },
 
     get(workspaceId, videoId, now = Date.now()) {
-      const row = repository.getReady(workspaceId, videoId);
-      return row ? present(row, { withBody: true, now, env, store }) : null;
+      const row = repository.getReady(workspaceId, videoId) || repository.episode(workspaceId, videoId);
+      if (!row || row.status === 'skipped') return null;
+      const config = readConfig();
+      const creator = config.creators.find((item) => item.id === row.creatorId);
+      return present({
+        ...row,
+        creatorName: creator?.name || row.authorName || '',
+      }, { withBody: row.status === 'ready', now, env, store });
     },
 
     status(workspaceId, videoId, now = Date.now()) {
-      const row = repository.getStatus(workspaceId, videoId);
-      if (!row) return null;
-      const articleState = repository.getArticleState?.(workspaceId, videoId) || '';
-      const view = present({ ...row, articleState }, { now, env, store });
+      const row = repository.getStatus(workspaceId, videoId) || repository.episode(workspaceId, videoId);
+      if (!row || row.status === 'skipped') return null;
+      const articleState = repository.getArticleState?.(workspaceId, videoId) || row.articleState || '';
+      const config = readConfig();
+      const creator = config.creators.find((item) => item.id === row.creatorId);
+      const view = present({
+        ...row,
+        articleState,
+        creatorName: creator?.name || row.authorName || '',
+      }, { now, env, store });
       return {
         videoId: view.videoId,
+        title: view.title,
+        originalTitle: view.originalTitle,
+        creatorId: view.creatorId,
+        creatorName: view.creatorName,
+        status: view.status,
+        transcriptSource: view.transcriptSource,
+        publishedAt: view.publishedAt,
+        durationSec: view.durationSec,
+        isRead: view.isRead,
+        isSaved: view.isSaved,
+        sourceUrl: view.sourceUrl,
         articleStatus: view.articleStatus,
         article: view.article,
         ...(view.partial ? { partial: view.partial } : {}),

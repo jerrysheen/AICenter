@@ -76,6 +76,8 @@ export function createYoutubePodcastRepository(database) {
       touchedAt: Number(extra.touchedAt) || 0,
       articleSummary: extra.articleSummary || '',
       titleStatus: extra.titleStatus || '',
+      isRead: Boolean(extra.isRead),
+      isSaved: Boolean(extra.isSaved),
       summary: extra.summary || '',
       body: extra.body || '',
       sourceUrl: extra.sourceUrl || '',
@@ -264,16 +266,23 @@ export function createYoutubePodcastRepository(database) {
       );
     },
 
-    listReady(workspaceId, limit = 200) {
+    listReady(workspaceId, limit = 200, options = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+      const includeFailed = options?.includeFailed === true;
+      const statusSql = includeFailed ? "e.status IN ('ready', 'failed')" : "e.status = 'ready'";
       const rows = database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
           e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
           e.attempts, e.article_status, e.article_day, e.created_at, ci.summary AS summary, '' AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name,
+          COALESCE(s.is_read, 0) AS is_read, COALESCE(s.is_saved, 0) AS is_saved,
           ${ARTICLE_PROGRESS_COLUMNS}
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
-        WHERE e.workspace_id = ? AND e.status = 'ready'
+        LEFT JOIN user_item_states s
+          ON s.workspace_id = e.workspace_id
+         AND s.content_item_id = e.content_item_id
+         AND e.content_item_id != ''
+        WHERE e.workspace_id = ? AND ${statusSql}
         ORDER BY COALESCE(e.published_at, 0) DESC, e.video_id DESC
         LIMIT ?`).all(workspaceId, safeLimit);
       return rows.map((row) => mapEpisode(row, {
@@ -282,8 +291,17 @@ export function createYoutubePodcastRepository(database) {
         displayTitle: row.display_title || '',
         sourceUrl: row.source_url || '',
         authorName: row.author_name || '',
+        isRead: Number(row.is_read) === 1,
+        isSaved: Number(row.is_saved) === 1,
         ...progressExtra(row),
       }));
+    },
+
+    followedCreatorIds(workspaceId) {
+      return database.prepare(`SELECT author_id FROM author_stats
+        WHERE workspace_id = ? AND platform = 'youtube' AND followed = 1`).all(workspaceId)
+        .map((row) => String(row.author_id || '').replace(/^youtube:/i, ''))
+        .filter(Boolean);
     },
 
     getArticleState(workspaceId, videoId) {
@@ -309,14 +327,21 @@ export function createYoutubePodcastRepository(database) {
 
     getReady(workspaceId, videoId) {
       const row = database.prepare(`SELECT e.*, ci.summary AS summary, ci.body AS body,
-          ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name
+          ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name,
+          COALESCE(s.is_read, 0) AS is_read, COALESCE(s.is_saved, 0) AS is_saved
         FROM youtube_podcast_episodes e
         LEFT JOIN content_items ci ON ci.id = e.content_item_id AND ci.workspace_id = e.workspace_id
+        LEFT JOIN user_item_states s
+          ON s.workspace_id = e.workspace_id
+         AND s.content_item_id = e.content_item_id
+         AND e.content_item_id != ''
         WHERE e.workspace_id = ? AND e.video_id = ? AND e.status = 'ready'`).get(workspaceId, videoId);
       if (!row) return null;
       return mapEpisode(row, {
         summary: row.summary || '',
         body: row.body || '',
+        isRead: Number(row.is_read) === 1,
+        isSaved: Number(row.is_saved) === 1,
         displayTitle: row.display_title || '',
         sourceUrl: row.source_url || '',
         authorName: row.author_name || '',

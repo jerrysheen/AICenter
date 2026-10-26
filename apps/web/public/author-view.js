@@ -499,7 +499,7 @@ function rebuildRows(rowsHost, followed, others, handlers) {
   rowsHost.replaceChildren(...nodes);
 }
 
-export function createAuthorView({ api, openAuthor, openArticle }) {
+export function createAuthorView({ api, openAuthor, openArticle, openPodcasts = () => {} }) {
   async function loadList(platform, cursor = '') {
     const query = new URLSearchParams({ platform: platform || 'all' });
     if (cursor) query.set('cursor', cursor);
@@ -806,6 +806,14 @@ export function createAuthorView({ api, openAuthor, openArticle }) {
       if (result) renderPage(root, authorId);
     });
     actions.append(readAll);
+    if (author.platform === 'youtube') {
+      const podcasts = document.createElement('button');
+      podcasts.type = 'button';
+      podcasts.className = 'author-read-all';
+      podcasts.textContent = '看播客';
+      podcasts.addEventListener('click', () => openPodcasts(author));
+      actions.append(podcasts);
+    }
     head.append(back, title, actions);
     shell.append(head);
     const meta = document.createElement('div');
