@@ -65,6 +65,7 @@ const {
   YOUTUBE_ARTICLE_POLL_SLOW_MS,
   renderPodcastLibrary,
   renderPodcastReader,
+  podcastMarkdownSlices,
   podcastReaderFloatVisibility,
   podcastStatusLabel,
   podcastExitAction,
@@ -381,12 +382,24 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   findAll(tocSheet, (node) => node.textContent === '利率路径（00:12:03）')[0].listeners.click();
   assert.equal(tocSheet.className.includes('is-open'), false);
   assert.equal(findAll(root, (node) => node.className === 'podcast-reader-float')[0].className.includes('is-shown'), false);
+  const layout = findAll(root, (node) => node.className === 'podcast-reader-layout')[0];
+  assert.equal(String(layout.className).includes('is-toc-open'), false);
+  const desktopToc = findAll(root, (node) => node.className === 'podcast-toc-desktop');
+  assert.equal(desktopToc.length, 2);
+  assert.equal(desktopToc[0].textContent, '目录');
+  assert.equal(desktopToc[0]['aria-expanded'], 'false');
+  desktopToc[0].listeners.click();
+  assert.equal(layout.className.includes('is-toc-open'), true);
+  assert.equal(desktopToc[0].textContent, '收起目录');
+  assert.equal(desktopToc[1]['aria-expanded'], 'true');
+  desktopToc[1].listeners.click();
+  assert.equal(layout.className.includes('is-toc-open'), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 0, nextY: 20, shown: false, narrow: true, revealAfter: 180 }), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 80, nextY: 420, shown: false, narrow: true, revealAfter: 180 }), false);
   assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 360, shown: false, narrow: true, revealAfter: 180 }), true);
   assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 362, shown: true, narrow: true, revealAfter: 180 }), true);
   assert.equal(podcastReaderFloatVisibility({ previousY: 360, nextY: 100, shown: true, narrow: true, revealAfter: 180 }), false);
-  assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 300, shown: false, narrow: false, revealAfter: 180 }), false);
+  assert.equal(podcastReaderFloatVisibility({ previousY: 420, nextY: 300, shown: false, narrow: false, revealAfter: 180 }), true);
   const css = readFileSync(path.join(publicDir, 'styles.css'), 'utf8');
   const barAt = css.indexOf('.reader-mobile-bar { display: grid;');
   const blockAt = css.lastIndexOf('@media (max-width: 699px)', barAt);
@@ -401,9 +414,51 @@ test('podcast reader keeps the speed switch and does not call an unfinished arti
   assert.equal(readFileSync(path.join(publicDir, 'youtube-podcasts.js'), 'utf8').includes('podcast-reader-exit'), false);
   assert.doesNotMatch(css, /\.podcast-reader-exit button \{[^}]*background:\s*var\(--brand\)/);
   assert.doesNotMatch(css, /\.podcast-reader-exit \{[^}]*left:\s*var\(--side-nav\)/);
-  assert.match(css, /@media \(min-width: 1200px\) \{[^]*?\.podcast-toc \{[^}]*position:\s*sticky;/);
+  assert.match(css, /@media \(min-width: 1200px\) \{[^]*?\.podcast-reader-layout\.is-toc-open \.podcast-toc \{[^}]*position:\s*sticky;/);
+  assert.equal(css.includes('.podcast-reader-layout:has(.podcast-toc)'), false);
+  assert.match(css, /\.podcast-reader-bar \{[^}]*position:\s*static;/);
+  assert.match(css, /@media \(min-width: 1200px\) \{[^}]*\.podcast-reader-float \{ left: var\(--side-nav\); \}/);
   assert.match(css, /@media \(max-width: 1199px\) \{[^]*?\.podcast-toc-toggle \{[^}]*position:\s*fixed;/);
   assert.match(css, /@media \(max-width: 720px\) \{[^]*?\.podcast-reader-float \{[^}]*position:\s*fixed;/);
+});
+
+test('a long episode paints the header before the article body', () => {
+  const frames = [];
+  globalThis.requestAnimationFrame = (fn) => {
+    frames.push(fn);
+    return frames.length;
+  };
+  try {
+    const block = `## 利率路径（00:12:03）\n\n${'市场认为路径变了。'.repeat(500)}\n\n`;
+    const body = `${block}${block}## 收束（00:46:12）\n\n最后一句。`;
+    assert.ok(body.length >= 6000);
+    const slices = podcastMarkdownSlices(body);
+    assert.ok(slices.length > 1);
+    assert.ok(slices[0].startsWith('##'));
+    assert.ok(slices.at(-1).includes('最后一句'));
+    const root = new El('div');
+    renderPodcastReader(root, {
+      episode: { videoId: 'longvid000001', title: '长文一集', articleStatus: 'ready', body },
+      mode: 'full',
+    });
+    assert.match(textOf(root), /长文一集/);
+    assert.match(textOf(root), /正在排版正文/);
+    assert.equal(findAll(root, (node) => node.className === 'podcast-article').length, 0);
+    let guard = 0;
+    while (frames.length && guard < 12) {
+      guard += 1;
+      frames.shift()();
+    }
+    const article = findAll(root, (node) => node.className === 'podcast-article')[0];
+    assert.ok(article);
+    assert.match(article.innerHTML, /利率路径/);
+    assert.match(article.innerHTML, /最后一句/);
+    assert.equal(textOf(root).includes('正在排版正文'), false);
+    assert.equal(findAll(root, (node) => node.className === 'podcast-toc-desktop').length, 2);
+    assert.equal(findAll(root, (node) => node.className === 'podcast-reader-layout')[0].className.includes('is-toc-open'), false);
+  } finally {
+    delete globalThis.requestAnimationFrame;
+  }
 });
 
 test('podcast exit returns to the list that opened the episode', () => {
@@ -446,4 +501,8 @@ test('podcast exit returns to the list that opened the episode', () => {
   assert.equal(calls[3][0], 'podcasts?pane=channels');
   assert.equal(calls[3][1].back, true);
   assert.equal(state.trail.length, 0);
+  assert.match(app, /function revealPodcastRoute\(/);
+  assert.match(app, /podcastEpisodeWaiters\.add\(id\)/);
+  assert.match(app, /settlePodcastEpisode\(id\)/);
+  assert.match(app, /document\.documentElement\.classList\.remove\('quote-boot', 'feed-boot'\)/);
 });

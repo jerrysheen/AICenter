@@ -1376,6 +1376,8 @@ function setView(name, options = {}) {
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
   document.body.dataset.view = view;
+  // 信息流/行情的首屏类会压过 .view.is-active。切到播客后先摘掉，否则列表和单集都是空白。
+  document.documentElement.classList.remove('quote-boot', 'feed-boot');
   if (view !== 'report') briefPage.stop();
   document.body.dataset.reader = view === 'page' && state.pageKind === 'article' ? '1' : '';
   document.body.dataset.podcastEpisode = view === 'page' && state.pageKind === 'podcast' ? '1' : '';
@@ -1423,7 +1425,6 @@ function setView(name, options = {}) {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
   }
-  document.documentElement.classList.remove('quote-boot', 'feed-boot');
   syncWorkPackageProgressWatch();
   updateHeaderAction(view);
   renderOverviewLanes();
@@ -1516,6 +1517,8 @@ function setView(name, options = {}) {
   else if (openingQuote) { scrollPageToTop(); releaseViewScroll = false; }
   else if (leaving && !reportViewOwnsScroll(view, briefPage.hasHourScroll())) { restoreViewScroll(view); releaseViewScroll = false; }
   else if (newArticle || newPodcast) window.scrollTo(0, 0);
+  // 后退或 hashchange 不会走 newPodcast。正文还没到时若停在上一页的滚动位置，短骨架在视口外面，看起来像空白。
+  if (view === 'podcasts' || (view === 'page' && state.pageKind === 'podcast')) revealPodcastRoute();
   persistFeedBrowseState();
   syncAskKeyboard();
   } finally {
@@ -10023,8 +10026,51 @@ function mergePodcastProgress(current, payload, id) {
   };
 }
 
+function revealPodcastRoute() {
+  const view = document.body.dataset.view;
+  if (view === 'podcasts') {
+    if (podcastCatalog) return;
+    viewScrollY.podcasts = 0;
+  } else if (view === 'page' && state.pageKind === 'podcast') {
+    const episode = state.youtubeEpisodes[state.pageId] || catalogEpisode(state.pageId);
+    if (String(episode?.body || '').trim()) return;
+    viewScrollY.page = 0;
+  } else return;
+  try { window.scrollTo(0, 0); } catch { /* 非浏览器环境 */ }
+}
+
+function podcastPageIs(id) {
+  return document.body.dataset.view === 'page' && state.pageKind === 'podcast' && state.pageId === id;
+}
+
+function settlePodcastEpisode(id) {
+  if (!podcastPageIs(id)) return;
+  const episode = state.youtubeEpisodes[id];
+  const root = pageRoot();
+  if (!root || !episode) return;
+  if (episode.missing) {
+    renderViewState(root, { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => leavePodcastEpisode() });
+    showPodcastExit();
+    return;
+  }
+  const ready = youtubeArticleReady(episode);
+  const hasBody = Boolean(String(episode.body || '').trim());
+  if (ready && !hasBody && !podcastBodyMiss.has(id) && !youtubeArticleInflight.has(id)) {
+    podcastBodyMiss.add(id);
+    loadPodcastEpisode(id);
+    return;
+  }
+  if (hasBody) podcastBodyMiss.delete(id);
+  paintPodcastEpisode(root, episode);
+  if (!ready) scheduleYoutubeArticleWatch({ id: `youtube:${id}`, platform: 'youtube' });
+}
+
 async function loadPodcastEpisode(id) {
-  if (!id || youtubeArticleInflight.has(id)) return;
+  if (!id) return;
+  if (youtubeArticleInflight.has(id)) {
+    podcastEpisodeWaiters.add(id);
+    return;
+  }
   youtubeArticleInflight.add(id);
   try {
     const current = state.youtubeEpisodes[id] || catalogEpisode(id);
@@ -10065,16 +10111,8 @@ async function loadPodcastEpisode(id) {
     }
   } finally {
     youtubeArticleInflight.delete(id);
-    if (document.body.dataset.view === 'page' && state.pageKind === 'podcast' && state.pageId === id) {
-      const episode = state.youtubeEpisodes[id];
-      if (episode?.missing) {
-        renderViewState(pageRoot(), { kind: 'empty', title: '没有这一集', message: '可以返回播客列表看其它单集。', action: '返回播客', onAction: () => leavePodcastEpisode() });
-        showPodcastExit();
-      } else if (episode) {
-        paintPodcastEpisode(pageRoot(), episode);
-        if (!youtubeArticleReady(episode)) scheduleYoutubeArticleWatch({ id: `youtube:${id}`, platform: 'youtube' });
-      }
-    }
+    podcastEpisodeWaiters.delete(id);
+    settlePodcastEpisode(id);
   }
 }
 
@@ -10271,6 +10309,8 @@ function youtubeArticleReady(episode) {
 
 const youtubeArticleWatch = new Map();
 const youtubeArticleInflight = new Set();
+const podcastEpisodeWaiters = new Set();
+const podcastBodyMiss = new Set();
 
 function applyYoutubeReady(post, episode) {
   if (!youtubeArticleReady(episode)) return post;
@@ -10350,6 +10390,10 @@ async function refreshYoutubeArticle(post) {
     youtubeArticleInflight.delete(id);
     if (document.body.dataset.view === 'page' && state.pageKind === 'article' && youtubeEpisodeId(state.dialogPost) === id) {
       renderArticlePage();
+    }
+    if (podcastEpisodeWaiters.has(id) || podcastPageIs(id)) {
+      podcastEpisodeWaiters.delete(id);
+      settlePodcastEpisode(id);
     }
   }
 }
@@ -17115,6 +17159,10 @@ async function completeAuthorizedStart(session) {
   if (view === 'knowledge') startupLoads.push(ensureKnowledge().catch((error) => showToast(error.message)));
   if (view === 'tools') {
     startupLoads.push(loadDividendInspection().catch((error) => showToast(error.message)));
+  }
+  if (view === 'podcasts') startupLoads.push(loadPodcastCatalog().catch(() => {}));
+  if (view === 'page' && state.pageKind === 'podcast' && state.pageId) {
+    startupLoads.push(Promise.resolve(loadPodcastEpisode(state.pageId)));
   }
   scheduleOverviewFocusWatch();
   logBehavior('app.open', { role: session.role });

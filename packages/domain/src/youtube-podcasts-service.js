@@ -17,6 +17,19 @@ import {
 const BLOCKED_HOLD = new Set(['daily-limit', 'failed', 'quota', 'login', 'page']);
 
 function articleFacts(row) {
+  if (row.articleStatus === 'ready') {
+    return {
+      holdReason: '',
+      holdDay: '',
+      done: 0,
+      translated: 0,
+      organized: 0,
+      total: 0,
+      summary: '',
+      titleStatus: 'ready',
+      touchedAt: 0,
+    };
+  }
   if (row.articleState) return articleProgress(row.articleState);
   return {
     holdReason: row.holdReason || '',
@@ -55,7 +68,7 @@ function articleJobsLive(store, now) {
   return youtubeArticleJobLive(jobs, now);
 }
 
-function articleView(row, now, env, store) {
+function articleView(row, now, env, store, jobsLive = null) {
   const facts = articleFacts(row);
   const clock = youtubePodcastClock(env);
   const today = formatYmd(zonedParts(now, clock.timeZone));
@@ -65,7 +78,8 @@ function articleView(row, now, env, store) {
     ? null
     : nextYoutubeArticleOpportunity(blocked ? nextZonedDayStart(now, clock.timeZone) - 1 : now, env);
   const touched = Number(facts.touchedAt) || 0;
-  const active = articleJobsLive(store, now) && touched > 0 && Number(now) - touched <= YOUTUBE_ARTICLE_TOUCH_MS;
+  const live = jobsLive == null ? articleJobsLive(store, now) : Boolean(jobsLive);
+  const active = live && touched > 0 && Number(now) - touched <= YOUTUBE_ARTICLE_TOUCH_MS;
   return describeYoutubeArticle({
     articleStatus: row.articleStatus,
     holdReason: hold,
@@ -82,7 +96,7 @@ function articleView(row, now, env, store) {
   });
 }
 
-function present(row, { withBody = false, now = Date.now(), env = process.env, store = null } = {}) {
+function present(row, { withBody = false, now = Date.now(), env = process.env, store = null, jobsLive = null } = {}) {
   const ready = row.articleStatus === 'ready';
   const partial = ready ? null : partialArticleBody(row.articleState);
   return {
@@ -101,7 +115,7 @@ function present(row, { withBody = false, now = Date.now(), env = process.env, s
     creatorName: row.creatorName || row.authorName || '',
     sourceUrl: row.sourceUrl || watchUrl(row.videoId),
     contentItemId: row.contentItemId || '',
-    article: articleView(row, now, env, store),
+    article: articleView(row, now, env, store, jobsLive),
     ...(partial?.text ? { partial } : {}),
     ...(withBody ? { body: stripResidualEnglish(row.body || '') } : {}),
   };
@@ -131,13 +145,15 @@ export function createYoutubePodcastService({ repository, store, configPath, env
   return {
     list(workspaceId) {
       const config = readConfig();
+      const now = Date.now();
+      const jobsLive = articleJobsLive(store, now);
       const names = new Map(config.creators.map((creator) => [creator.id, creator.name]));
       const followed = new Set(typeof repository.followedCreatorIds === 'function' ? repository.followedCreatorIds(workspaceId) : []);
       const rows = repository.listReady(workspaceId, 500, { includeFailed: true });
       const named = (row) => present({
         ...row,
         creatorName: names.get(row.creatorId) || row.authorName || '',
-      }, { env, store });
+      }, { env, store, now, jobsLive });
       const configured = config.creators;
       const grouped = configured.map((creator) => ({
         id: creator.id,
