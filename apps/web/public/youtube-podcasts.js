@@ -986,9 +986,16 @@ export function renderPodcastReader(root, {
   if (defer) schedulePodcastArticle({ root, body, episode, paint, layout, bar, floatBar, exitBar, article });
 }
 
+function podcastChildList(node) {
+  const nested = node?.children;
+  if (!nested) return [];
+  // 浏览器里 element.children 是 HTMLCollection，没有数组的 find。测试桩才是真数组。
+  if (typeof nested.find === 'function') return nested;
+  return Array.from(nested);
+}
+
 function findPodcastArticle(body) {
-  const nested = body?.children || [];
-  return nested.find((node) => String(node.className || '').split(' ').includes('podcast-article')) || null;
+  return podcastChildList(body).find((node) => String(node.className || '').split(/\s+/).includes('podcast-article')) || null;
 }
 
 function markPodcastKeypoints(article) {
