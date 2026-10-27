@@ -461,6 +461,38 @@ test('a long episode paints the header before the article body', () => {
   }
 });
 
+test('ready episode without a body still paints the title when children is not an array', () => {
+  const root = new El('div');
+  const real = document.createElement;
+  document.createElement = (tag) => {
+    const node = real(tag);
+    const kids = node.children;
+    node.children = new Proxy(kids, {
+      get(target, prop, receiver) {
+        if (prop === 'find') return undefined;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    return node;
+  };
+  try {
+    renderPodcastReader(root, {
+      episode: {
+        videoId: '_b3LfMflIGs',
+        title: '单集标题应该马上出现',
+        creatorName: '示例频道',
+        articleStatus: 'ready',
+      },
+    });
+    assert.match(textOf(root), /单集标题应该马上出现/);
+    assert.match(textOf(root), /正在读取正文/);
+    assert.equal(root.children.length > 0, true);
+    assert.equal(findAll(root, (node) => String(node.className || '').includes('podcast-reader-layout'))[0].className.includes('is-toc-open'), false);
+  } finally {
+    document.createElement = real;
+  }
+});
+
 test('podcast exit returns to the list that opened the episode', () => {
   assert.deepEqual(podcastExitAction('#podcasts'), { route: 'podcasts', historyBack: true });
   assert.deepEqual(podcastExitAction('#podcasts?channel=odd-lots'), { route: 'podcasts?channel=odd-lots', historyBack: true });
