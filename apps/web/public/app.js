@@ -1376,8 +1376,6 @@ function setView(name, options = {}) {
   state.hubLane = overviewLane(view, state.tradePane);
   rememberOverviewTarget(view, state.tradePane);
   document.body.dataset.view = view;
-  // 信息流/行情的首屏类会压过 .view.is-active。切到播客后先摘掉，否则列表和单集都是空白。
-  document.documentElement.classList.remove('quote-boot', 'feed-boot');
   if (view !== 'report') briefPage.stop();
   document.body.dataset.reader = view === 'page' && state.pageKind === 'article' ? '1' : '';
   document.body.dataset.podcastEpisode = view === 'page' && state.pageKind === 'podcast' ? '1' : '';
@@ -1425,6 +1423,7 @@ function setView(name, options = {}) {
     elements['page-title'].textContent = viewCopy[view].title;
     elements['page-subtitle'].textContent = viewCopy[view].subtitle;
   }
+  document.documentElement.classList.remove('quote-boot', 'feed-boot');
   syncWorkPackageProgressWatch();
   updateHeaderAction(view);
   renderOverviewLanes();

@@ -325,12 +325,14 @@ export function createYoutubePodcastRepository(database) {
       return episode;
     },
 
-    getReady(workspaceId, videoId) {
-      const row = database.prepare(`SELECT e.video_id, e.creator_id, e.channel_key, e.title,
+    getReady(workspaceId, videoId, options = {}) {
+      const columns = options.slim
+        ? `e.video_id, e.creator_id, e.channel_key, e.title,
           e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
           e.attempts, e.article_status, e.article_day, e.created_at,
-          CASE WHEN e.article_status = 'ready' THEN '' ELSE e.article_state END AS article_state,
-          ci.summary AS summary, ci.body AS body,
+          CASE WHEN e.article_status = 'ready' THEN '' ELSE e.article_state END AS article_state`
+        : 'e.*';
+      const row = database.prepare(`SELECT ${columns}, ci.summary AS summary, ci.body AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name,
           COALESCE(s.is_read, 0) AS is_read, COALESCE(s.is_saved, 0) AS is_saved
         FROM youtube_podcast_episodes e

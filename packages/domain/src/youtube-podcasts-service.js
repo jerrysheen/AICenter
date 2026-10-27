@@ -178,7 +178,7 @@ export function createYoutubePodcastService({ repository, store, configPath, env
     },
 
     get(workspaceId, videoId, now = Date.now()) {
-      const row = repository.getReady(workspaceId, videoId) || repository.episode(workspaceId, videoId);
+      const row = repository.getReady(workspaceId, videoId, { slim: true }) || repository.episode(workspaceId, videoId);
       if (!row || row.status === 'skipped') return null;
       const config = readConfig();
       const creator = config.creators.find((item) => item.id === row.creatorId);
