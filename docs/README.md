@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-27-podcast-reader-open.md`：从别的页面进入播客列表或单集时，首屏类不再挡住面板，正文未到就把滚动拉回顶部，并接上被文章页占用的同一次请求。宽屏目录默认收起，页头随滚动离开，上滚才露出短条。列表少查进行中的任务。页面读单集时不带字幕原文，已整理的行不再展开大段状态。长文先画页头再排正文。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
+
 - `progress/2026-10-26-podcast-point-compile.md`：新整理默认改成事点统编。每一段由 Gemma 26B 写 2～5 个带细节的事点，`$N billion` 写成 `N×10 亿美元`。Flash Lite 只用一次，按主题写成一篇长文。统编失败就降级成切章后拼接事点，不再润色一轮。`flash-polish` 和整集字幕一次成稿都不上这条路径。已 `ready` 的稿不自动重写。不新增 migration。只需要重启 Worker。
 
 - `progress/2026-10-26-podcast-synthetic-article.md`：新整理的每一段由 Gemma 26B 写提炼正文（数字、人名、公司写进正文），Flash Lite 只切一次章。默认按章把正文接成一篇。`point-compile` 和 `flash-polish` 先登记，还没接模型。已 `ready` 的并行稿和章节对话稿不自动重写。不新增 migration。只需要重启 Worker。

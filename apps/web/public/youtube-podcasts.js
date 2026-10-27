@@ -1,5 +1,5 @@
 import { icon } from './icons.js?v=dev';
-import { renderMarkdownInto } from './markdown.js?v=dev';
+import { markdownToHtml, renderMarkdownInto } from './markdown.js?v=dev';
 import { attachYoutubeHeadingTimes, youtubeWatchUrl } from './youtube-article-links.js?v=dev';
 import { clockLabel, dateKey, monthDayLabel } from './shanghai-time.js?v=dev';
 
@@ -511,7 +511,7 @@ function readerTab(label, active, onClick) {
   return tab;
 }
 
-// 窄屏阅读：页头随正文滚走。只有继续上滚、且已经离开页头之后，才露出一行返回 / 短标题 / 速读。
+// 各宽度都让页头随正文滚走。离开页头后再向上滚，才露出一行返回 / 短标题 / 速读。narrow 仍保留给调用方。
 export function podcastReaderFloatVisibility({
   previousY = 0,
   nextY = 0,
@@ -519,8 +519,9 @@ export function podcastReaderFloatVisibility({
   narrow = true,
   revealAfter = 48,
 } = {}) {
+  void narrow;
   const y = Number(nextY) || 0;
-  if (!narrow || y < revealAfter) return false;
+  if (y < revealAfter) return false;
   const delta = y - (Number(previousY) || 0);
   if (delta > 4) return false;
   if (delta < -4) return true;
@@ -610,9 +611,6 @@ function bindPodcastChrome(root, floatBar, flowBar, exitBar, tocToggle = null, t
     }
     const y = Number(view.scrollY) || 0;
     const gate = Math.max(72, Number(flowBar?.offsetHeight) || 0);
-    if (document.documentElement?.style?.setProperty) {
-      document.documentElement.style.setProperty('--podcast-reader-bar', `${gate}px`);
-    }
     shown = podcastReaderFloatVisibility({
       previousY: lastY,
       nextY: y,
@@ -620,6 +618,10 @@ function bindPodcastChrome(root, floatBar, flowBar, exitBar, tocToggle = null, t
       narrow: media ? media.matches : true,
       revealAfter: gate,
     });
+    const compact = shown ? Math.max(40, Number(floatBar?.offsetHeight) || 40) : 0;
+    if (document.documentElement?.style?.setProperty) {
+      document.documentElement.style.setProperty('--podcast-reader-bar', `${compact}px`);
+    }
     lastY = y;
     if (floatBar.classList && typeof floatBar.classList.toggle === 'function') {
       floatBar.classList.toggle('is-shown', shown);
@@ -743,6 +745,130 @@ function markTocCurrent(id) {
   }
 }
 
+let podcastTocExpanded = false;
+const PODCAST_MARKDOWN_SLICE = 8000;
+
+export function podcastMarkdownSlices(value, limit = PODCAST_MARKDOWN_SLICE) {
+  const text = String(value || '');
+  const size = Math.max(1, Number(limit) || PODCAST_MARKDOWN_SLICE);
+  if (text.length < size) return [text];
+  const starts = [0];
+  for (const match of text.matchAll(/^#{1,3}[ \t]/gm)) {
+    if (match.index > 0) starts.push(match.index);
+  }
+  starts.push(text.length);
+  const parts = [];
+  let current = '';
+  for (let index = 0; index < starts.length - 1; index += 1) {
+    const piece = text.slice(starts[index], starts[index + 1]);
+    if (current && current.length + piece.length > size) {
+      parts.push(current);
+      current = piece;
+    } else current += piece;
+  }
+  if (current) parts.push(current);
+  return parts.length ? parts : [text];
+}
+
+function flagClass(node, name, on) {
+  if (!node) return;
+  if (node.classList?.toggle) {
+    node.classList.toggle(name, Boolean(on));
+    return;
+  }
+  const names = String(node.className || '').split(/\s+/).filter((item) => item && item !== name);
+  if (on) names.push(name);
+  node.className = names.join(' ');
+}
+
+function insertChildBefore(parent, node, before) {
+  if (!parent || !node) return;
+  if (typeof parent.insertBefore === 'function') {
+    parent.insertBefore(node, before || null);
+    return;
+  }
+  const kids = parent.children;
+  if (!Array.isArray(kids)) return;
+  const index = before ? kids.indexOf(before) : -1;
+  if (index >= 0) kids.splice(index, 0, node);
+  else kids.push(node);
+}
+
+function detachNode(parent, node) {
+  if (!parent || !node) return;
+  if (typeof node.remove === 'function') {
+    node.remove();
+    return;
+  }
+  if (Array.isArray(parent.children)) {
+    const index = parent.children.indexOf(node);
+    if (index >= 0) parent.children.splice(index, 1);
+  }
+}
+
+function mountPodcastToc(layout, articleNode, { body, bars = [], host = null } = {}) {
+  if (!articleNode) return null;
+  const toc = buildPodcastToc(articleNode);
+  if (!toc?.nav) return null;
+  insertChildBefore(layout, toc.nav, body);
+  flagClass(layout, 'is-toc-open', podcastTocExpanded);
+  const buttons = [];
+  const paintButtons = () => {
+    for (const button of buttons) {
+      button.textContent = podcastTocExpanded ? '收起目录' : '目录';
+      button.setAttribute('aria-expanded', podcastTocExpanded ? 'true' : 'false');
+    }
+  };
+  const toggleDesktop = () => {
+    podcastTocExpanded = !podcastTocExpanded;
+    flagClass(layout, 'is-toc-open', podcastTocExpanded);
+    paintButtons();
+  };
+  for (const anchor of bars) {
+    if (!anchor || typeof anchor.append !== 'function') continue;
+    const button = el('button', 'podcast-toc-desktop', '');
+    button.type = 'button';
+    button.addEventListener('click', toggleDesktop);
+    buttons.push(button);
+    anchor.append(button);
+  }
+  paintButtons();
+  if (toc.toggle && host && typeof host.append === 'function') host.append(toc.toggle, toc.sheet);
+  return toc;
+}
+
+function finishPodcastArticle(articleNode, episode) {
+  attachYoutubeHeadingTimes(articleNode, episode.videoId, { subtitle: true });
+  markPodcastKeypoints(articleNode);
+}
+
+function schedulePodcastArticle({ root, body, episode, paint, layout, bar, floatBar, exitBar, article }) {
+  const slices = podcastMarkdownSlices(episode.body);
+  let index = 0;
+  const step = () => {
+    if (root._podcastPaint !== paint) return;
+    if (body.isConnected === false) return;
+    let articleNode = findPodcastArticle(body);
+    if (!articleNode) {
+      const pending = [...(body.children || [])].find((node) => String(node.className || '').split(/\s+/).includes('podcast-pending'));
+      detachNode(body, pending);
+      articleNode = el('div', 'podcast-article');
+      body.append(articleNode);
+    }
+    const slice = slices[index] || '';
+    index += 1;
+    articleNode.innerHTML = `${articleNode.innerHTML || ''}${markdownToHtml(slice)}`;
+    if (index < slices.length) {
+      requestAnimationFrame(step);
+      return;
+    }
+    finishPodcastArticle(articleNode, episode);
+    const toc = mountPodcastToc(layout, articleNode, { body, bars: [bar, floatBar], host: article });
+    bindPodcastChrome(root, floatBar, bar, exitBar, toc?.toggle || null, toc?.sheet || null);
+  };
+  requestAnimationFrame(step);
+}
+
 function buildPodcastToc(article) {
   const entries = podcastTocEntries(article);
   if (!entries.length) return null;
@@ -798,6 +924,8 @@ export function renderPodcastReader(root, {
   onStar = () => {},
 } = {}) {
   root.replaceChildren();
+  root._podcastPaint = (Number(root._podcastPaint) || 0) + 1;
+  const paint = root._podcastPaint;
   const reading = mode === 'speed' ? 'speed' : 'full';
   const article = el('article', 'page-article podcast-reader');
   article.dataset.mode = reading;
@@ -840,17 +968,22 @@ export function renderPodcastReader(root, {
   floatBar.append(floatBack, floatTitle, readerTabs(reading, onMode, 'podcast-switch podcast-reader-float-tabs'));
   const body = el('div', 'reader-content detail-body');
   body.dataset.readerPane = reading;
+  const defer = reading === 'full'
+    && podcastArticleReady(episode)
+    && String(episode?.body || '').trim().length >= 6000
+    && typeof requestAnimationFrame === 'function';
   if (reading === 'speed') fillSpeedRead(body, episode, () => onMode('full'));
-  else fillFullArticle(body, episode);
-  const toc = reading === 'full' ? buildPodcastToc(body.querySelector?.('.podcast-article') || findPodcastArticle(body)) : null;
+  else fillFullArticle(body, episode, { defer });
   const layout = el('div', 'podcast-reader-layout');
-  if (toc?.nav) layout.append(toc.nav);
   layout.append(body);
   const exitBar = podcastExitControl(onExit || onBack, exitLabel);
+  const toc = !defer && reading === 'full'
+    ? mountPodcastToc(layout, body.querySelector?.('.podcast-article') || findPodcastArticle(body), { body, bars: [bar, floatBar], host: article })
+    : null;
   article.append(bar, layout, floatBar, exitBar);
-  if (toc?.toggle) article.append(toc.toggle, toc.sheet);
   root.append(article);
   bindPodcastChrome(root, floatBar, bar, exitBar, toc?.toggle || null, toc?.sheet || null);
+  if (defer) schedulePodcastArticle({ root, body, episode, paint, layout, bar, floatBar, exitBar, article });
 }
 
 function findPodcastArticle(body) {
@@ -883,16 +1016,19 @@ function fillSpeedRead(body, episode, onFull) {
   body.append(note);
 }
 
-function fillFullArticle(body, episode) {
+function fillFullArticle(body, episode, { defer = false } = {}) {
   if (podcastArticleReady(episode)) {
     if (!String(episode.body || '').trim()) {
       body.append(el('p', 'podcast-pending', '正在读取正文…'));
       return;
     }
+    if (defer) {
+      body.append(el('p', 'podcast-pending', '正在排版正文…'));
+      return;
+    }
     const article = el('div', 'podcast-article');
     renderMarkdownInto(article, episode.body);
-    attachYoutubeHeadingTimes(article, episode.videoId, { subtitle: true });
-    markPodcastKeypoints(article);
+    finishPodcastArticle(article, episode);
     body.append(article);
     return;
   }

@@ -1,15 +1,15 @@
 const ARTICLE_PROGRESS_COLUMNS = `
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END AS hold_reason,
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END AS hold_day,
-          CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.touchedAt') ELSE 0 END AS touched_at,
-          CASE WHEN json_valid(e.article_state) THEN COALESCE(json_extract(e.article_state, '$.summary'), '') ELSE '' END AS article_summary,
-          CASE WHEN json_valid(e.article_state) THEN COALESCE(json_extract(e.article_state, '$.titleStatus'), '') ELSE '' END AS title_status,
-          CASE
+          CASE WHEN e.article_status = 'ready' THEN '' ELSE CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdReason') ELSE '' END END AS hold_reason,
+          CASE WHEN e.article_status = 'ready' THEN '' ELSE CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.holdDay') ELSE '' END END AS hold_day,
+          CASE WHEN e.article_status = 'ready' THEN 0 ELSE CASE WHEN json_valid(e.article_state) THEN json_extract(e.article_state, '$.touchedAt') ELSE 0 END END AS touched_at,
+          CASE WHEN e.article_status = 'ready' THEN '' ELSE CASE WHEN json_valid(e.article_state) THEN COALESCE(json_extract(e.article_state, '$.summary'), '') ELSE '' END END AS article_summary,
+          CASE WHEN e.article_status = 'ready' THEN '' ELSE CASE WHEN json_valid(e.article_state) THEN COALESCE(json_extract(e.article_state, '$.titleStatus'), '') ELSE '' END END AS title_status,
+          CASE WHEN e.article_status = 'ready' THEN 0 ELSE CASE
             WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
             THEN json_array_length(e.article_state, '$.parts')
             ELSE 0
-          END AS parts_total,
-          (
+          END END AS parts_total,
+          CASE WHEN e.article_status = 'ready' THEN 0 ELSE (
             SELECT COUNT(*) FROM json_each(
               CASE
                 WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
@@ -19,8 +19,8 @@ const ARTICLE_PROGRESS_COLUMNS = `
             ) AS part
             WHERE TRIM(COALESCE(json_extract(part.value, '$.translation'), '')) != ''
                OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
-          ) AS parts_done,
-          (
+          ) END AS parts_done,
+          CASE WHEN e.article_status = 'ready' THEN 0 ELSE (
             SELECT COUNT(*) FROM json_each(
               CASE
                 WHEN json_valid(e.article_state) AND json_type(json_extract(e.article_state, '$.parts')) = 'array'
@@ -30,7 +30,7 @@ const ARTICLE_PROGRESS_COLUMNS = `
             ) AS part
             WHERE TRIM(COALESCE(json_extract(part.value, '$.section'), '')) != ''
                OR TRIM(COALESCE(json_extract(part.value, '$.reply'), '')) != ''
-          ) AS parts_organized`;
+          ) END AS parts_organized`;
 
 function progressExtra(row) {
   return {
@@ -325,8 +325,14 @@ export function createYoutubePodcastRepository(database) {
       return episode;
     },
 
-    getReady(workspaceId, videoId) {
-      const row = database.prepare(`SELECT e.*, ci.summary AS summary, ci.body AS body,
+    getReady(workspaceId, videoId, options = {}) {
+      const columns = options.slim
+        ? `e.video_id, e.creator_id, e.channel_key, e.title,
+          e.duration_sec, e.published_at, e.status, e.reason, e.transcript_source, e.content_item_id,
+          e.attempts, e.article_status, e.article_day, e.created_at,
+          CASE WHEN e.article_status = 'ready' THEN '' ELSE e.article_state END AS article_state`
+        : 'e.*';
+      const row = database.prepare(`SELECT ${columns}, ci.summary AS summary, ci.body AS body,
           ci.title AS display_title, ci.source_url AS source_url, ci.author_name AS author_name,
           COALESCE(s.is_read, 0) AS is_read, COALESCE(s.is_saved, 0) AS is_saved
         FROM youtube_podcast_episodes e
