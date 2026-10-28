@@ -13,6 +13,7 @@ export {
   materializeElucidSettings,
   materializeHarnessSettings,
   missingHarnessLlmCredential,
+  isHourlyHarnessTask,
   resolveHarnessLlm,
   resolveGoogleArticleModel,
   resolveGoogleArticleModelPool,

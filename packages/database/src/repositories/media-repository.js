@@ -481,6 +481,17 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         FROM media_index_entries e WHERE e.workspace_id=? AND e.created_at>=? AND e.created_at<? AND e.external_id NOT IN (SELECT value FROM json_each(?)) ORDER BY event_at,e.external_id`)
         .all(extractorVersion,extractorVersion,workspaceId,startAt,endAt,JSON.stringify(hiddenExternalIds)).map(r=>({id:`media:${r.external_id}`,sourceKey:r.source_key || '',publisherKey:r.publisher_key || '',title:r.title || '',sourceUrl:r.canonical_url || '',publishedAt:r.published_at ?? null,version:`index:${r.revision}/body:${r.body_revision}`,eventAt:r.event_at}));
     },
+    listHourlyCategoryTexts(workspaceId, externalIds = []) {
+      const wanted = [...new Set((externalIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const rows = [];
+      for (let index = 0; index < wanted.length; index += 200) {
+        const chunk = wanted.slice(index, index + 200);
+        const marks = chunk.map(() => '?').join(', ');
+        rows.push(...database.prepare(`SELECT external_id, title, substr(coalesce(summary, ''), 1, 400) AS excerpt
+          FROM media_index_entries WHERE workspace_id = ? AND external_id IN (${marks})`).all(workspaceId, ...chunk));
+      }
+      return rows.map((row) => ({ id: `media:${row.external_id}`, title: row.title || '', excerpt: row.excerpt || '' }));
+    },
     getEntries(workspaceId, externalIds) {
       const ids = [...new Set(externalIds.filter(Boolean))];
       if (!ids.length) return [];

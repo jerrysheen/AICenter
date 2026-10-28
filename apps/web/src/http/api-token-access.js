@@ -9,6 +9,7 @@ const EXACT_PATHS = new Set([
   '/api/v1/reports/daily/tracking',
   '/api/v1/reports/daily/analysis/status',
   '/api/v1/reports/hourly',
+  '/api/v1/reports/hourly-category',
   '/api/v1/reports/hourly/index',
   '/api/v1/reports/hourly/snapshot',
   '/api/v1/reports/hourly/search',

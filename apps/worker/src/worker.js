@@ -82,6 +82,7 @@ import {loadInformationTreeSkills,loadArticleNormalizeSkills} from '../../../pac
 import {createTreeMaterialPort} from '../../../packages/domain/src/information-tree-materials.js';
 import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePreparation,prioritizeRecentTreePreparation} from '../../../packages/runtime/src/information-tree-module.js';
 import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
+import {createHourlyCategoryService, hourlyCategoryEnabled} from '../../../packages/domain/src/hourly-category.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
 import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
@@ -659,6 +660,25 @@ export function createAiCenterWorker(options = {}) {
   const informationService=options.informationService || treeService || createInformationDigestService({
     reportRepository:store.repositories.report,feedService,mediaPort:mediaService,agentRuntime,timezone:dailyConfig.timezone,
   });
+  const categoryOn=hourlyCategoryEnabled(env);
+  const categoryCatalog=categoryOn ? (treeCatalog || options.tagCatalog || readTagCatalogFile(existsSync(instance.tagCatalogPath) ? instance.tagCatalogPath : path.join(repositoryRoot,'config/tags.default.json'))) : null;
+  const categoryMaterials=categoryOn ? (treeMaterials || createTreeMaterialPort({feedService,mediaService,flashSources})) : null;
+  const hourlyCategory=categoryOn && categoryCatalog && categoryMaterials ? createHourlyCategoryService({
+    repository:store.repositories.hourlyCategory,
+    taggingRepository:store.repositories.tagging,
+    candidatePort:categoryMaterials.candidates,
+    catalog:categoryCatalog,
+    agentRuntime,
+    enabled:true,
+    excerptPort(workspaceId, candidates) {
+      const feedIds=candidates.filter((row)=>String(row.id || '').startsWith('feed:')).map((row)=>row.id.slice(5));
+      const mediaIds=candidates.filter((row)=>String(row.id || '').startsWith('media:')).map((row)=>row.id.slice(6));
+      return [
+        ...(store.repositories.feed.listHourlyCategoryTexts?.(workspaceId, feedIds) || []),
+        ...(store.repositories.media.listHourlyCategoryTexts?.(workspaceId, mediaIds) || []),
+      ];
+    },
+  }) : null;
   if(treeService)registry.register({manifest:informationTreeManifest,jobHandlers:createInformationTreeJobHandlers(treeService,{candidates:treeMaterials.candidates,refreshMinute:articleStrategy ? 30 : null,env})});
   registry.register({
     manifest: reportDailyManifest,
@@ -678,6 +698,7 @@ export function createAiCenterWorker(options = {}) {
         env,
         ...readingHourSourceAccess({ feed: store.repositories.feed, media: store.repositories.media }),
       }),
+      hourlyCategory,
       beforeHourly:treeService ? (input)=>prioritizeRecentTreePreparation(store,treeMaterials.candidates,input.workspaceId || 'local') : null,
       briefService: options.briefService || createDailyBriefService({
         reportRepository: store.repositories.report,

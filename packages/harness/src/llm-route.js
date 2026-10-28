@@ -66,11 +66,15 @@ export function resolveGoogleHourlyAdmissionModels(env = process.env) {
   return [...new Set(listed)].map(model=>resolveGoogleHourlyModel(env,model));
 }
 
+export function isHourlyHarnessTask(closedTask) {
+  return closedTask === 'hourly-brief' || closedTask === 'hourly-category-brief';
+}
+
 export function resolveHarnessLlm(env = process.env, { researchProfile, closedTask, googleModel } = {}) {
   const article=closedTask==='article-normalize';
   const articleMaxTokens=Number(env.AI_CENTER_HARNESS_ARTICLE_MAX_TOKENS || 6144);
   if(article && ![4096,6144].includes(articleMaxTokens))throw new Error('article max tokens must be 4096 or 6144');
-  const hourly = closedTask === 'hourly-brief';
+  const hourly = isHourlyHarnessTask(closedTask);
   const configuredProvider = resolveHarnessLlmProvider(env);
   const google=(article && text(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER)==='google') || (hourly && text(env.AI_CENTER_HARNESS_HOURLY_PROVIDER)==='google');
   const hourlyMaxTokens=Number(env.AI_CENTER_HARNESS_HOURLY_MAX_TOKENS || (google ? 4096 : 8192));
@@ -105,7 +109,7 @@ export function resolveHarnessLlm(env = process.env, { researchProfile, closedTa
     protocol: google ? 'google-generative-ai' : provider === HARNESS_ELUCID_PROVIDER ? 'openai-responses' : '',
     settingsYaml: materializeHarnessSettings({
       google:google ? {keyEnv:googleKeyEnv,model,maxTokens:hourly ? hourlyMaxTokens : articleMaxTokens} : null,
-      briefModel: ['media-brief','daily-analysis','hourly-brief','article-normalize'].includes(closedTask) && provider === HARNESS_ELUCID_PROVIDER ? model : '',
+      briefModel: ['media-brief','daily-analysis','hourly-brief','hourly-category-brief','article-normalize'].includes(closedTask) && provider === HARNESS_ELUCID_PROVIDER ? model : '',
       briefMaxTokens:article ? articleMaxTokens : hourly ? hourlyMaxTokens : 4096,
       noRetries:article,
       elucidKeyEnv,

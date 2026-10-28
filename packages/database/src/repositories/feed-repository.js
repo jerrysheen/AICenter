@@ -2024,6 +2024,18 @@ export function createFeedRepository(database, emitEvent) {
       ).count;
     },
 
+    listHourlyCategoryTexts(workspaceId, ids = []) {
+      const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
+      const rows = [];
+      for (let index = 0; index < wanted.length; index += 200) {
+        const chunk = wanted.slice(index, index + 200);
+        const marks = chunk.map(() => '?').join(', ');
+        rows.push(...database.prepare(`SELECT id, title, substr(coalesce(summary, ''), 1, 400) AS excerpt
+          FROM content_items WHERE workspace_id = ? AND id IN (${marks})`).all(workspaceId, ...chunk));
+      }
+      return rows.map((row) => ({ id: `feed:${row.id}`, title: row.title || '', excerpt: row.excerpt || '' }));
+    },
+
     listLegacyProviderItems(workspaceId,provider) {
       return database.prepare(`SELECT ci.*,c.external_id,c.captured_at,c.metadata_json capture_metadata FROM content_items ci
         JOIN captures c ON c.id=ci.capture_id AND c.workspace_id=ci.workspace_id WHERE ci.workspace_id=? AND c.provider=? ORDER BY ci.created_at`)

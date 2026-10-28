@@ -6544,3 +6544,9 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .podcast-episodes .news-row.is-muted .news-row-title { font-weight: 400; }
 .podcast-episodes .focus-btn,
 .podcast-reader-meta .focus-btn { min-width: 44px; min-height: 44px; }
+.hourly-category { margin: 0 0 8px; }
+.hourly-category-events { margin: 0; padding: 0 0 0 1.1em; }
+.hourly-category-event { margin: 0 0 10px; }
+.hourly-category-bullet { margin: 0; }
+.hourly-category-links { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 4px 0 0; }
+.hourly-category-link { font-size: 13px; }

@@ -4,6 +4,7 @@ import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
 import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
 import {condenseJobFailure, describeCondenseFailure, isTerminalPendingReason} from '../../domain/src/information-tree-policy.js';
 import {enqueueDueFailedHourRefreshes} from './information-tree-module.js';
+import { hourlyCategoryEnabled } from '../../domain/src/hourly-category.js';
 
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
@@ -362,7 +363,39 @@ export function releaseOpenHourlyJobs(store, env = process.env, now = Date.now()
   return released;
 }
 
-export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, beforeHourly=null, dailyConfig=resolveDailyConfig(), env=process.env }) {
+const HOUR_CATEGORY_MS = 3_600_000;
+
+export function hourlyCategoryHourStarts(input, digests, now = Date.now()) {
+  if (Number.isFinite(input?.hourStart)) return [input.hourStart];
+  if (Array.isArray(digests)) {
+    const starts = [];
+    for (const item of digests) {
+      const start = item?.window?.startAt;
+      if (Number.isFinite(start) && !starts.includes(start)) starts.push(start);
+    }
+    return starts;
+  }
+  const latest = Math.floor(now / HOUR_CATEGORY_MS) * HOUR_CATEGORY_MS - HOUR_CATEGORY_MS;
+  return latest >= 0 ? [latest] : [];
+}
+
+export async function runHourlyCategoryAlongside({
+  env = process.env, hourlyCategory, workspaceId = 'local', hourStarts = [], log = console.error,
+} = {}) {
+  if (!hourlyCategoryEnabled(env) || typeof hourlyCategory?.generateHour !== 'function') return [];
+  const saved = [];
+  for (const hourStart of hourStarts) {
+    try {
+      const edition = await hourlyCategory.generateHour({ workspaceId, hourStart });
+      if (edition) saved.push(edition);
+    } catch (error) {
+      log(`[worker] hourly-category hour=${hourStart} ${String(error?.message || error).slice(0, 180)}`);
+    }
+  }
+  return saved;
+}
+
+export function createReportJobHandlers({ reportService, briefService = null, informationService=null, treeService=null, readingHour=null, hourlyCategory=null, beforeHourly=null, dailyConfig=resolveDailyConfig(), env=process.env }) {
   if (!reportService?.generateDailyReport) throw new Error('daily report jobs require reportService');
   return {
     [HOURLY_FAILURE_CATCHUP_JOB_TYPE]: async (_raw, context) => {
@@ -382,7 +415,16 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         return { status: 'skipped', reason: 'already-running' };
       }
       await beforeHourly?.(input,context);
-      const digests=await informationService.generateHourlyDigests(input);
+      let digests;
+      try {
+        digests=await informationService.generateHourlyDigests(input);
+      } catch (error) {
+        await runHourlyCategoryAlongside({
+          env, hourlyCategory, workspaceId: workspaceIdEarly,
+          hourStarts: hourlyCategoryHourStarts(input, null),
+        });
+        throw error;
+      }
       const hourMs=3600000;
       const windows=input.hourStart!==undefined ? [{startAt:input.hourStart,endAt:input.hourStart+hourMs}] : digests.map(item=>item?.window).filter(item=>Number.isFinite(item?.startAt) && Number.isFinite(item?.endAt));
       const readingErrors=[];
@@ -402,6 +444,14 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         }
       }
       const workspaceId=input.workspaceId || 'local';
+      const categoryEditions = await runHourlyCategoryAlongside({
+        env, hourlyCategory, workspaceId,
+        hourStarts: hourlyCategoryHourStarts(input, digests),
+      });
+      const categoryFields = hourlyCategoryEnabled(env) ? {
+        categoryEditionIds: categoryEditions.map((item) => item.id),
+        categoryStatus: categoryEditions.map((item) => item.status),
+      } : {};
       const followUpPlan=hourlyFollowUpPlan({requestedHour:input.hourStart,digests,deferredByStart,followUp:input.followUp});
       if(followUpPlan) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
       let prepStats={enqueued:0,prioritized:0,queued:0,running:0,missing:0};
@@ -440,12 +490,14 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
           window:main?.window,pendingCount:main?.pendingIds.length || 0,groupFailureCount:main?.groupFailures?.length || 0,
           readingFailed:readingErrors.length>0,readingErrors,classificationDeferred,
+          ...categoryFields,
           backgroundIncomplete:digests.slice(1).filter(d=>d.status!=='ready').map(d=>d.window.startAt)};
       }
       const failed=(rawInput?.hourStart!==undefined ? digests : digests.slice(0,1)).filter(d=>d.editorial?.status==='failed');
       if(failed.length) throw new Error(`${failed.length} 个小时主题整理未完成；提炼底稿已保存，可继续重试。`);
       return {snapshotIds:digests.map(d=>d.id),itemCount:digests.reduce((s,d)=>s+d.items.length,0),
         readingFailed:readingErrors.length>0,readingErrors,classificationDeferred,
+        ...categoryFields,
         backgroundIncomplete:rawInput?.hourStart===undefined ? digests.slice(1).filter(d=>d.editorial?.status==='failed').map(d=>d.window.startAt) : []};
     },
     [REPORT_DAILY_JOB_TYPE]: async (rawInput, context) => {

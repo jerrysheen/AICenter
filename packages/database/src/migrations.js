@@ -2513,6 +2513,18 @@ migrations.push({ version: 96, name: 'content_item_fts', up(database) {
     INSERT OR IGNORE INTO feed_search_index_cursor (id, rowid_cursor, done) VALUES (1, 0, 0);`);
 }});
 
+migrations.push({ version: 97, name: 'hourly_category_editions', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS hourly_category_editions (
+      workspace_id TEXT NOT NULL,
+      hour_start INTEGER NOT NULL,
+      id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, hour_start)
+    );`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`

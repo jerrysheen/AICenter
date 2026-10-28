@@ -214,5 +214,7 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 
 补充：用户重新授权上述并发上线，准入和在途租约的最小单位为账号/已知项目＋模型。同账号不同模型可同时执行，分钟/日/滚动小时预算与冷却独立；总封闭任务并发仍最多5。Host模型选择参数不进入HTTP/Page契约，正式运行状态见progress/2026-10-07-gemini-account-model-pool.md。
 
+分类小时报 `hourly-category-v1` 与信息树小时刊期并行。模型输入是 `{window, category:{id,label}, items:[{sourceId,title,excerpt,tags}]}`，摘录不超过约 200 字，不含正文。输出只接受 `{categoryId, events:[{bullet, sourceIds}]}`，`sourceIds` 必须是该次输入的子集，事件最多 12 条。存储在 `hourly_category_editions`，页面投影把 `sourceId` 解成 `#article/<sourceId>`，不包含模型名或提示词哈希。`__untagged__` 的显示名是「待标注」。开关 `AI_CENTER_HOURLY_CATEGORY` 默认关闭。
+
 社交Feed兼容阅读投影可包含normalizedArticle，运行时由FeedNormalizedArticleSchema校验nodeId、中文title、summary、body和generatedAt，读取必须匹配同workspace当前原文版本。它是中文整理稿，不等同完整逐句翻译；旧translation字段语义不变，原文body不覆盖，不暴露供应商字段。
 2026-10-07 小时浓缩树的 eventAt/window 使用首次入库时刻（社交 createdAt、媒体索引 createdAt）；publishedAt 仍保存原文发布时间。仅 tree-v3 候选读取采用收录口径，旧 DailyWindow/legacy 日报保持发布时间语义。重分窗以新不可变信息节点保存，旧引用保持，页面不增加供应商字段。

@@ -24,6 +24,7 @@ import { createNorthboundRepository } from './northbound-repository.js';
 import { createYoutubePodcastRepository } from './youtube-podcast-repository.js';
 import { createXVideoRepository } from './x-video-repository.js';
 import { createXLinkRepository } from './x-link-repository.js';
+import { createHourlyCategoryRepository } from './hourly-category-repository.js';
 
 export function createDomainRepositories(database, emitEvent) {
   return Object.freeze({
@@ -52,6 +53,7 @@ export function createDomainRepositories(database, emitEvent) {
     tagging: createTaggingRepository(database, emitEvent),
     research: createResearchRecallRepository(database, emitEvent),
     report: createReportRepository(database, emitEvent),
+    hourlyCategory: createHourlyCategoryRepository(database, emitEvent),
     strategy: createStrategyRepository(database, emitEvent),
   });
 }
