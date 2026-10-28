@@ -113,7 +113,7 @@ function plannedSection(start) {
 }
 
 // 英文稿的旧账：每段一次翻译、一次分节，要点按摘录分批，最后一次标题。只给 longVideoGemmaCalls 对照。
-// 新整理：每段一次 Gemma 26B，写出 2～5 个带细节的事点。Flash 再统编成文。不先译再改写。
+// 新整理：每段一次 Gemma 26B，写出 2～5 个带细节的事点。Flash 按事点块分批统编，再拼成一篇。不先译再改写，也不设字数门槛。
 export const PARALLEL_SEGMENT_LAYOUT = 'parallel-segments';
 export const PROSE_SEGMENT_KIND = 'prose';
 export const POINTS_SEGMENT_KIND = 'points';
@@ -130,14 +130,16 @@ export const GEMMA_SEGMENT_SYSTEM = `你把一段播客字幕收成 2 到 5 个�
 - 去掉口头禅、重复和字幕碎句。不要逐条滚动字幕各写一行，不要写成「主持人：」。
 - topic 是本段主题短名，不超过 20 个字。`;
 
-export const EPISODE_COMPILE_SYSTEM = `你是中文财经播客主编。根据各段事点，按主题写成一篇通顺的简体中文长文。
+export const EPISODE_COMPILE_SYSTEM = `你是中文财经播客主编。根据给出的事点，按主题写成通顺的简体中文正文。给出的事点可能只是整集里的一批，就把这一批写成可以接进同一篇的若干章。
 
 只输出 Markdown 正文，不要 JSON，不要 Markdown 围栏。
 
 规则：
 - 按主题分章。每章一个 ## 标题，标题是中文主题。材料里有时间就写在标题后面，例如 ## 利率路径（00:12:03）。没有时间就不要编。
-- 每章是合成叙述。事点里的数字、人名、公司、股票代码和立场写进正文。不要另起「章节总结」或「对话」，不要把事点原样贴成清单当正文。
-- 相邻事点连成因果和结构。不要逐段照搬字幕，不要写成「主持人：」墙。
+- 每章是合成叙述。筛掉口水、口头禅和重复，但数字、人名、公司、股票代码、因果、风险、时间和立场要写进正文。
+- 可以合并相邻事点的叙述，不要把不同议题收成一句带过。不要为了写短而丢掉后半段事点，也不要为了显得长而注水。篇幅跟着事点里的信息走。
+- 不要另起「章节总结」或「对话」，不要把事点原样贴成清单当正文。
+- 不要逐段照搬字幕，不要写成「主持人：」墙。
 - 材料里已经写成「N×10 亿美元」的金额保持这个写法。
 - 简体中文。`;
 
@@ -353,8 +355,14 @@ export {
   MERGE_FLASH_POLISH,
   MERGE_POINT_COMPILE,
   PODCAST_MERGE_DEFAULT,
+  COMPILE_BATCH_MAX_CHARS,
+  COMPILE_BATCH_MAX_PARTS,
   acceptCompiledArticle,
+  compileAnchorCoverage,
+  compileBatchKey,
+  compileMaterialBatches,
   compilePrompt,
+  joinCompiledBlocks,
   mergeParallelArticle,
   podcastMergePlan,
   resolvePodcastMergeRequest,

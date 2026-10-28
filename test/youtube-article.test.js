@@ -1525,6 +1525,176 @@ test('chapter-concat still asks flash only to cut chapters', async () => {
   }
 });
 
+function pointSlot(index, points) {
+  return {
+    text: `source ${index} stays in the segment.`,
+    start: `00:${String(index).padStart(2, '0')}:03`,
+    status: 'translated',
+    translation: points.join('\n'),
+    section: '',
+    hint: points,
+    topic: `主题${index}`,
+    points,
+    segmentKind: 'points',
+    attempts: 0,
+    provider: 'gemma',
+    calls: { gemma: 1, flash: 0 },
+  };
+}
+
+function longPointParts() {
+  const count = 6;
+  return Array.from({ length: count }, (_, index) => {
+    if (index === 0) {
+      return pointSlot(index, ['利率会差 24%，NVDA 仍在讨论。', '前半锚点甲还写了回购和路径。']);
+    }
+    if (index === count - 1) {
+      return pointSlot(index, ['CoreWeave 把剩余履约加到 86 亿美元。', '后半锚点乙的风险是电力不够。']);
+    }
+    return pointSlot(index, [`第 ${index} 段写交付和折旧。`, `第 ${index} 段后半仍要保留因果。`]);
+  });
+}
+
+async function savePointDraft(opened, videoId, parts) {
+  const transcript = await saveShortEpisode(opened, videoId);
+  const row = opened.store.repositories.youtubePodcasts.episode('local', videoId);
+  opened.store.repositories.youtubePodcasts.saveEpisode({
+    workspaceId: 'local',
+    videoId,
+    creatorId: row.creatorId,
+    channelKey: row.channelKey,
+    title: row.title,
+    durationSec: row.durationSec,
+    publishedAt: row.publishedAt,
+    status: 'ready',
+    reason: row.reason,
+    transcriptSource: row.transcriptSource,
+    contentItemId: row.contentItemId,
+    attempts: row.attempts,
+    sourceTranscript: transcript,
+    sourceHash: transcriptHash(transcript),
+    articleStatus: 'pending',
+    articleDay: '',
+    articleState: JSON.stringify({
+      engine: 'gemma',
+      hash: transcriptHash(transcript),
+      layout: PARALLEL_SEGMENT_LAYOUT,
+      parts,
+    }),
+  });
+}
+
+function compileFromPrompt(input) {
+  if (input.system !== EPISODE_COMPILE_SYSTEM) throw new Error(`统编测试里意外的 Flash：${input.system}`);
+  if (String(input.prompt).includes('CoreWeave')) {
+    return { text: '## 算力合同（00:05:03）\n\nCoreWeave 把剩余履约加到 86 亿美元，后半锚点乙的风险是电力不够。' };
+  }
+  return { text: '## 利率（00:00:03）\n\n利率会差 24%，NVDA 仍在讨论。前半锚点甲还写了回购和路径。' };
+}
+
+test('point compile writes the later blocks instead of one pass over the whole episode', async () => {
+  const opened = openStore();
+  const gemma = fakeGemma((input) => {
+    if (input.system === GEMMA_SEGMENT_SYSTEM) throw new Error('事点已齐，不应再抽');
+    if (input.system === EPISODE_COMPILE_SYSTEM) throw new Error('统编不应改走 Gemma');
+    return articleReply(input);
+  });
+  const flash = fakeGemma((input) => compileFromPrompt(input));
+  try {
+    await savePointDraft(opened, 'compilebatch1', longPointParts());
+    const result = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(result.ready, 1);
+    const compiles = flash.calls.filter((call) => call.system === EPISODE_COMPILE_SYSTEM);
+    assert.ok(compiles.length >= 2);
+    assert.equal(compiles[0].prompt.includes('CoreWeave'), false);
+    assert.match(compiles[0].prompt, /前半锚点甲/);
+    assert.match(compiles.at(-1).prompt, /CoreWeave/);
+    assert.match(compiles.at(-1).prompt, /第 \d+ 批/);
+    assert.equal(compiles.at(-1).prompt.includes('前半锚点甲'), false);
+    assert.deepEqual(gemma.calls.map((call) => call.system), [GEMMA_ARTICLE_TITLE_SYSTEM]);
+    const saved = opened.store.repositories.youtubePodcasts.getReady('local', 'compilebatch1');
+    assert.match(saved.body, /前半锚点甲/);
+    assert.match(saved.body, /86 亿美元/);
+    assert.match(saved.body, /后半锚点乙/);
+    assert.equal(saved.body.includes('### 章节总结'), false);
+    assert.equal(saved.body.includes('### 对话'), false);
+    assert.ok((saved.body.match(/^## /gm) || []).length >= 2);
+    const state = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'compilebatch1').articleState);
+    assert.equal(state.mergeStrategy, 'point-compile');
+    assert.equal(state.mergeFallback, '');
+    assert.equal(state.summaryProvider, 'flash');
+    assert.equal(state.summaryCalls.flash, compiles.length);
+    assert.equal(state.compiledBlocks.length, compiles.length);
+    assert.equal(state.compileCoverage.missing.includes('24%'), false);
+    assert.equal(state.compileCoverage.missing.includes('NVDA'), false);
+    assert.equal(state.compileCoverage.missing.includes('86亿美元'), false);
+  } finally {
+    opened.close();
+  }
+});
+
+test('a compile deadline keeps finished blocks and the next pass does not rewrite them', async () => {
+  const opened = openStore();
+  const controller = new AbortController();
+  let compiles = 0;
+  const gemma = fakeGemma((input) => articleReply(input));
+  const flash = fakeGemma((input) => {
+    compiles += 1;
+    if (compiles > 1) controller.abort();
+    return compileFromPrompt(input);
+  });
+  try {
+    await savePointDraft(opened, 'compilehold01', longPointParts());
+    const paused = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: flash.generate.bind(flash),
+      signal: controller.signal,
+      now: Date.parse('2026-10-19T02:00:00Z'),
+    });
+    assert.equal(paused.stopped, 'deadline');
+    assert.equal(paused.ready, 0);
+    const held = JSON.parse(opened.store.repositories.youtubePodcasts.episode('local', 'compilehold01').articleState);
+    assert.equal(held.holdReason, 'deadline');
+    assert.equal(held.compiledArticle || '', '');
+    assert.equal(held.compiledBlocks.length, 1);
+    assert.match(held.compiledBlocks[0], /前半锚点甲/);
+    const seen = compiles;
+    const resumed = fakeGemma((input) => compileFromPrompt(input));
+    const done = await runYoutubeArticlePass({
+      env: { AI_CENTER_YOUTUBE_PODCASTS_ARTICLE: '1' },
+      repository: opened.store.repositories.youtubePodcasts,
+      feedRepository: opened.store.repositories.feed,
+      workspaceId: 'local',
+      gemmaGenerate: gemma.generate.bind(gemma),
+      flashGenerate: resumed.generate.bind(resumed),
+      now: Date.parse('2026-10-19T03:00:00Z'),
+    });
+    assert.equal(done.ready, 1);
+    assert.equal(compiles, seen);
+    assert.ok(resumed.calls.length >= 1);
+    assert.equal(resumed.calls.some((call) => String(call.prompt).includes('前半锚点甲')), false);
+    assert.equal(resumed.calls.some((call) => String(call.prompt).includes('CoreWeave')), true);
+    const body = opened.store.repositories.youtubePodcasts.getReady('local', 'compilehold01').body;
+    assert.match(body, /前半锚点甲/);
+    assert.match(body, /86 亿美元/);
+    assert.match(body, /后半锚点乙/);
+  } finally {
+    opened.close();
+  }
+});
+
 test('exhausted 5xx retries stop the round as upstream and do not count as a part failure', async () => {
   const opened = openStore();
   const waits = [];
