@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-28-hourly-compact-first.md`：类目小时改成目录标题加一行要点和原文链接。信息树时间线收在折起的块里，圆点和展开行不再占首屏。打开简报先读最近 6 小时的刊期索引，7 日索引在页面出来之后再补。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
+
 - `progress/2026-10-28-hourly-nav-density.md`：简报打开停在小时报，地址写上 `?hour=`。类目分桶保留每一条 Gemma 目录标签，并补上信息树节点上的 `tagId`。Worker 打出各标签从入库到进桶的数量。雪球 7x24 仍排除。没有材料的刊期写成 `empty`。不重开失败补跑。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 
 - `progress/2026-10-28-bsk-daemon-watch.md`：BrowserSkill daemon 退出后，启动器和 Windows Worker 用原来的 `daemon start` 把它拉起来。`BSK_AUTO_START` 仍是 0，CLI 不会偷启。`AI_CENTER_BSK_DAEMON_WATCH=0` 才关掉看守。不新增 migration。需要重启 Worker；启动器里的检查要重新运行 `scripts/start-ai-center.ps1`。
