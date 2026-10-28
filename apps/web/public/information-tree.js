@@ -6,7 +6,7 @@ import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import { createListSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
-import { paintHourlyCategory } from './hourly-category-view.js?v=dev';
+import { layoutHourlyDual, paintHourlyCategory } from './hourly-category-view.js?v=dev';
 
 // 贴在标题栏下面的行不算可见。行的顶要落到 coverBottom 上或更下面，只露出一截底边的高行也不算。
 export function briefVisibleAnchor(rows, coverBottom = 0) {
@@ -1499,14 +1499,16 @@ export function createInformationTreePage(host) {
   }
   function attachHourlyCategory(page, edition, token) {
     if (typeof host.hourlyCategory !== 'function' || host.hourlyCategory() !== true) return;
-    const slot=el('section','','hourly-category');
-    page.prepend(slot);
+    const {categorySlot}=layoutHourlyDual(page, {enabled:true});
+    if (!categorySlot) return;
     const start=edition?.window?.startAt;
     if (!Number.isFinite(start)) return;
     api(`/api/v1/reports/hourly-category?hourStart=${start}`).then((data) => {
-      if (token !== epoch || !slot.isConnected) return;
-      paintHourlyCategory(slot, data?.enabled ? data.edition : null);
-    }).catch((error) => { if (!aborted(error)) slot.replaceChildren(); });
+      if (token !== epoch || categorySlot.isConnected === false) return;
+      paintHourlyCategory(categorySlot, data?.enabled ? data.edition : null);
+    }).catch((error) => {
+      if (!aborted(error) && categorySlot.isConnected !== false) paintHourlyCategory(categorySlot, null);
+    });
   }
   function paintEmptyHour(edition, claim, token=epoch) {
     clearHourSlow();finishOpening(claim,true);paintHourUnread();

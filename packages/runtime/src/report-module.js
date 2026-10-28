@@ -4,7 +4,7 @@ import {GenerateHourlyDigestInputSchema} from '../../contracts/src/report.js';
 import {resolveDailyConfig,resolveDailyWindow,resolveReportDate} from '../../domain/src/daily-window.js';
 import {condenseJobFailure, describeCondenseFailure, isTerminalPendingReason} from '../../domain/src/information-tree-policy.js';
 import {enqueueDueFailedHourRefreshes} from './information-tree-module.js';
-import { hourlyCategoryEnabled } from '../../domain/src/hourly-category.js';
+import { formatHourlyCategoryObserveLog, hourlyCategoryEnabled } from '../../domain/src/hourly-category.js';
 
 export const REPORT_DAILY_JOB_TYPE = 'report.daily.generate';
 export const REPORT_DAILY_BRIEF_JOB_TYPE = 'report.daily.brief.generate';
@@ -400,17 +400,35 @@ export function hourlyCategoryHourStarts(input, digests, now = Date.now()) {
   return latest >= 0 ? [latest] : [];
 }
 
+function treeEditionOnHand(digests, hourStart) {
+  if (!Array.isArray(digests)) return null;
+  return digests.find((item) => item?.window?.startAt === hourStart) || null;
+}
+
+function readStoredTreeEdition(treeService, workspaceId, hourStart) {
+  if (typeof treeService?.published !== 'function' || !Number.isFinite(hourStart)) return null;
+  try {
+    return treeService.published(workspaceId, 'hourly', { startAt: hourStart, endAt: hourStart + HOUR_CATEGORY_MS }) || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runHourlyCategoryAlongside({
-  env = process.env, hourlyCategory, workspaceId = 'local', hourStarts = [], log = console.error,
+  env = process.env, hourlyCategory, workspaceId = 'local', hourStarts = [], digests = null, treeService = null, log = console.log, now = () => Date.now(),
 } = {}) {
   if (!hourlyCategoryEnabled(env) || typeof hourlyCategory?.generateHour !== 'function') return [];
   const saved = [];
   for (const hourStart of hourStarts) {
+    const startedAt = now();
+    const known = treeEditionOnHand(digests, hourStart) || readStoredTreeEdition(treeService, workspaceId, hourStart);
+    const tree = { treeExists: Boolean(known), treeStatus: known?.status || '' };
     try {
       const edition = await hourlyCategory.generateHour({ workspaceId, hourStart });
       if (edition) saved.push(edition);
+      log(formatHourlyCategoryObserveLog({ workspaceId, hourStart, edition, startedAt, finishedAt: now(), ...tree }));
     } catch (error) {
-      log(`[worker] hourly-category hour=${hourStart} ${String(error?.message || error).slice(0, 180)}`);
+      log(formatHourlyCategoryObserveLog({ workspaceId, hourStart, error, startedAt, finishedAt: now(), ...tree }));
     }
   }
   return saved;
@@ -444,6 +462,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         await runHourlyCategoryAlongside({
           env, hourlyCategory, workspaceId: workspaceIdEarly,
           hourStarts: hourlyCategoryHourStarts(input, null),
+          treeService,
         });
         throw error;
       }
@@ -469,6 +488,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const categoryEditions = await runHourlyCategoryAlongside({
         env, hourlyCategory, workspaceId,
         hourStarts: hourlyCategoryHourStarts(input, digests),
+        digests, treeService,
       });
       const categoryFields = hourlyCategoryEnabled(env) ? {
         categoryEditionIds: categoryEditions.map((item) => item.id),

@@ -9,6 +9,7 @@ import {
   bucketCategoryItems,
   categorySourceHref,
   createHourlyCategoryService,
+  formatHourlyCategoryObserveLog,
   hourlyCategoryEnabled,
   parseCategoryBriefOutput,
   primaryCategoryId,
@@ -18,8 +19,9 @@ import {
   REPORT_HOURLY_JOB_TYPE,
   createReportJobHandlers,
   hourlyCategoryHourStarts,
+  runHourlyCategoryAlongside,
 } from '../packages/runtime/src/report-module.js';
-import { paintHourlyCategory } from '../apps/web/public/hourly-category-view.js';
+import { layoutHourlyDual, paintHourlyCategory } from '../apps/web/public/hourly-category-view.js';
 
 const HOUR = 3_600_000;
 const hour = 500_000 * HOUR;
@@ -284,4 +286,192 @@ test('category blocks render bullets and article links', () => {
   const empty = createElement('section');
   paintHourlyCategory(empty, null);
   assert.equal(empty.children[0].textContent, '分类小时报尚未生成');
+  const quiet = createElement('section');
+  paintHourlyCategory(quiet, { status: 'ready', categories: [] });
+  assert.equal(quiet.hidden, false);
+  assert.equal(quiet.children[0].textContent, '这一小时没有分类条目');
+});
+
+test('hourly category observe log records comparison fields and does not add a model call', async () => {
+  const edition = {
+    workspaceId: 'local',
+    window: { startAt: hour, endAt: hour + HOUR },
+    status: 'ready',
+    untaggedCount: 1,
+    categories: [
+      { inputCount: 3, truncated: false, status: 'ready' },
+      { inputCount: 1, truncated: true, status: 'ready' },
+    ],
+  };
+  const line = formatHourlyCategoryObserveLog({
+    workspaceId: 'local',
+    hourStart: hour,
+    edition,
+    startedAt: 1_000,
+    finishedAt: 1_125,
+    treeExists: true,
+    treeStatus: 'ready',
+  });
+  assert.match(line, /^\[worker\] hourly-category-observe /);
+  assert.match(line, /workspaceId=local/);
+  assert.match(line, new RegExp(`hourStart=${hour}`));
+  assert.match(line, /flag=on/);
+  assert.match(line, /materialCount=4/);
+  assert.match(line, /bucketCount=2/);
+  assert.match(line, /untaggedCount=1/);
+  assert.match(line, /untaggedRatio=0\.250/);
+  assert.match(line, /flashCallCount=2/);
+  assert.match(line, /categoryDurationMs=125/);
+  assert.match(line, /status=ready/);
+  assert.match(line, /treeEdition=ready/);
+  assert.match(line, /truncatedBuckets=1/);
+  assert.equal(line.includes('\n'), false);
+  const empty = formatHourlyCategoryObserveLog({
+    hourStart: hour,
+    edition: { status: 'ready', categories: [], untaggedCount: 0 },
+  });
+  assert.match(empty, /status=empty/);
+  assert.match(empty, /flashCallCount=0/);
+  assert.match(empty, /untaggedRatio=0\.000/);
+  assert.match(empty, /treeEdition=missing/);
+  const failed = formatHourlyCategoryObserveLog({ hourStart: hour, error: new Error('分类简报失败') });
+  assert.match(failed, /status=error/);
+  assert.match(failed, /message=分类简报失败/);
+  assert.match(failed, /flashCallCount=0/);
+
+  const lines = [];
+  let calls = 0;
+  const off = await runHourlyCategoryAlongside({
+    env: {},
+    hourStarts: [hour],
+    hourlyCategory: { async generateHour() { calls += 1; return edition; } },
+    log: (row) => lines.push(row),
+  });
+  assert.deepEqual(off, []);
+  assert.equal(calls, 0);
+  assert.deepEqual(lines, []);
+
+  let published = 0;
+  const on = await runHourlyCategoryAlongside({
+    env: { AI_CENTER_HOURLY_CATEGORY: '1' },
+    workspaceId: 'local',
+    hourStarts: [hour],
+    digests: [{ window: { startAt: hour }, status: 'ready' }],
+    treeService: { published() { published += 1; return { status: 'failed' }; } },
+    hourlyCategory: { async generateHour() { calls += 1; return edition; } },
+    log: (row) => lines.push(row),
+    now: () => 2_000,
+  });
+  assert.equal(calls, 1);
+  assert.equal(published, 0);
+  assert.equal(on.length, 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /flag=on/);
+  assert.match(lines[0], /treeEdition=ready/);
+  assert.match(lines[0], /flashCallCount=2/);
+
+  lines.length = 0;
+  const missed = await runHourlyCategoryAlongside({
+    env: { AI_CENTER_HOURLY_CATEGORY: '1' },
+    workspaceId: 'local',
+    hourStarts: [hour],
+    treeService: { published() { published += 1; return { status: 'partial' }; } },
+    hourlyCategory: { async generateHour() { throw new Error('save failed'); } },
+    log: (row) => lines.push(row),
+    now: () => 3_000,
+  });
+  assert.deepEqual(missed, []);
+  assert.equal(published, 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /status=error/);
+  assert.match(lines[0], /treeEdition=partial/);
+  assert.match(lines[0], /message=save_failed/);
+});
+
+function elementText(element, found = []) {
+  if (!element?.children?.length && element?.textContent) found.push(element.textContent);
+  for (const child of element?.children || []) elementText(child, found);
+  return found;
+}
+
+function elementsByClass(element, className, found = []) {
+  if (String(element?.className || '').split(/\s+/).includes(className)) found.push(element);
+  for (const child of element?.children || []) elementsByClass(child, className, found);
+  return found;
+}
+
+test('dual-run hourly page shows both sections only when the flag is on', () => {
+  function createElement(tag) {
+    const element = {
+      tag,
+      className: '',
+      textContent: '',
+      hidden: false,
+      children: [],
+      append(...nodes) { this.children.push(...nodes); },
+      replaceChildren(...nodes) { this.children = [...nodes]; },
+    };
+    Object.defineProperty(element, 'href', { writable: true, value: '' });
+    return element;
+  }
+  globalThis.document = { createElement };
+  const edition = {
+    categories: [{
+      id: 'macro',
+      label: '宏观',
+      inputCount: 1,
+      status: 'ready',
+      events: [{ bullet: '利率维持不变。', links: [{ sourceId: 'media:story', href: '#article/media:story' }] }],
+    }],
+  };
+  const flagged = createElement('div');
+  const day = createElement('p');
+  day.className = 'news-day-label';
+  day.textContent = '今天';
+  const tree = createElement('p');
+  tree.className = 'reading-block';
+  tree.textContent = '信息树里的这一小时';
+  flagged.append(day, tree);
+  const laid = layoutHourlyDual(flagged, { enabled: true });
+  paintHourlyCategory(laid.categorySlot, edition);
+  assert.deepEqual(elementsByClass(flagged, 'hourly-dual-label').map((item) => item.textContent), ['信息树小时', '类目小时']);
+  assert.equal(flagged.children[0].textContent, '今天');
+  assert.equal(elementText(elementsByClass(flagged, 'hourly-dual-tree')[0]).includes('信息树里的这一小时'), true);
+  assert.equal(elementText(elementsByClass(flagged, 'hourly-dual-category')[0]).includes('利率维持不变。'), true);
+  const link = elementsByClass(flagged, 'hourly-category-link')[0];
+  assert.equal(link.href, '#article/media:story');
+  assert.equal(link.textContent, '原文');
+
+  const pending = createElement('div');
+  const kept = createElement('p');
+  kept.textContent = '树侧仍在';
+  pending.append(kept);
+  const pendingLayout = layoutHourlyDual(pending, { enabled: true });
+  paintHourlyCategory(pendingLayout.categorySlot, null);
+  assert.equal(elementText(pending).includes('树侧仍在'), true);
+  assert.equal(elementText(pending).includes('分类小时报尚未生成'), true);
+  assert.equal(elementsByClass(pending, 'hourly-dual-label').length, 2);
+
+  const plain = createElement('div');
+  const only = createElement('p');
+  only.className = 'reading-block';
+  only.textContent = '这一小时没有条目';
+  plain.append(only);
+  const unchanged = layoutHourlyDual(plain, { enabled: false });
+  assert.equal(unchanged.categorySlot, null);
+  assert.equal(plain.children.length, 1);
+  assert.equal(plain.children[0].textContent, '这一小时没有条目');
+  assert.equal(elementsByClass(plain, 'hourly-dual-label').length, 0);
+  assert.equal(elementText(plain).includes('信息树小时'), false);
+  assert.equal(elementText(plain).includes('类目小时'), false);
+
+  const live = createElement('div');
+  const row = createElement('p');
+  row.textContent = '集合里的树';
+  live.append(row);
+  const bag = live.children;
+  live.children = { length: bag.length, *[Symbol.iterator]() { yield* bag; } };
+  layoutHourlyDual(live, { enabled: true });
+  assert.deepEqual(elementsByClass(live, 'hourly-dual-label').map((item) => item.textContent), ['信息树小时', '类目小时']);
+  assert.equal(elementText(live).includes('集合里的树'), true);
 });

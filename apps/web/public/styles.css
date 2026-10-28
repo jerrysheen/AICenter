@@ -6544,7 +6544,19 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .podcast-episodes .news-row.is-muted .news-row-title { font-weight: 400; }
 .podcast-episodes .focus-btn,
 .podcast-reader-meta .focus-btn { min-width: 44px; min-height: 44px; }
+.hourly-dual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-top: 8px;
+}
+.hourly-dual-label { margin: 0 0 8px; color: var(--font-tertiary); font-size: 13px; font-weight: 650; }
+.hourly-dual-pane, .hourly-dual-body { min-width: 0; }
 .hourly-category { margin: 0 0 8px; }
+@media (max-width: 1099px) {
+  .hourly-dual { grid-template-columns: minmax(0, 1fr); }
+}
 .hourly-category-events { margin: 0; padding: 0 0 0 1.1em; }
 .hourly-category-event { margin: 0 0 10px; }
 .hourly-category-bullet { margin: 0; }

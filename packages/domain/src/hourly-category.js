@@ -163,6 +163,58 @@ export function parseCategoryBriefOutput(raw, { categoryId, sourceIds } = {}) {
   return { categoryId, events };
 }
 
+function observeToken(value, limit = 80) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, limit).replace(/ /g, '_');
+  return text || '-';
+}
+
+export function hourlyCategoryObserveStatus(edition, error = null) {
+  if (error || !edition) return 'error';
+  const categories = Array.isArray(edition.categories) ? edition.categories : [];
+  if (!categories.length) return 'empty';
+  if (edition.status === 'failed') return 'error';
+  if (edition.status === 'partial') return 'partial';
+  return edition.status === 'ready' ? 'ready' : 'error';
+}
+
+// Counts already stored on the edition. flashCallCount is how many non-empty buckets this run attempted, not a new call.
+export function formatHourlyCategoryObserveLog({
+  workspaceId = 'local',
+  hourStart,
+  edition = null,
+  error = null,
+  startedAt = 0,
+  finishedAt = 0,
+  treeExists = false,
+  treeStatus = '',
+} = {}) {
+  const categories = Array.isArray(edition?.categories) ? edition.categories : [];
+  const materialCount = categories.reduce((sum, category) => sum + (Number(category?.inputCount) || 0), 0);
+  const untaggedCount = Number(edition?.untaggedCount) || 0;
+  const ratio = materialCount > 0 ? untaggedCount / materialCount : 0;
+  const truncatedBuckets = categories.filter((category) => category?.truncated === true).length;
+  const duration = Number.isFinite(finishedAt) && Number.isFinite(startedAt) ? Math.max(0, Math.round(finishedAt - startedAt)) : 0;
+  const start = Number.isFinite(hourStart) ? hourStart : Number(edition?.window?.startAt);
+  const treeEdition = treeExists ? observeToken(treeStatus) : 'missing';
+  const parts = [
+    '[worker] hourly-category-observe',
+    `workspaceId=${observeToken(edition?.workspaceId || workspaceId)}`,
+    `hourStart=${Number.isFinite(start) ? start : '-'}`,
+    'flag=on',
+    `materialCount=${materialCount}`,
+    `bucketCount=${categories.length}`,
+    `untaggedCount=${untaggedCount}`,
+    `untaggedRatio=${ratio.toFixed(3)}`,
+    `flashCallCount=${categories.length}`,
+    `categoryDurationMs=${duration}`,
+    `status=${hourlyCategoryObserveStatus(edition, error)}`,
+    `treeEdition=${treeEdition}`,
+    `truncatedBuckets=${truncatedBuckets}`,
+  ];
+  if (error) parts.push(`message=${observeToken(error?.message || error, 180)}`);
+  return parts.join(' ');
+}
+
 export function projectHourlyCategory(edition) {
   if (!edition) return null;
   return {
