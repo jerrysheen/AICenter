@@ -52,30 +52,28 @@ function classificationOf(catalog) {
 }
 
 export function primaryCategoryId(tagIds, catalog) {
+  return categoryBucketIds(tagIds, catalog)[0];
+}
+
+// Every catalog tag is kept. groupByTag still folds a child into its parent.
+// The first tag alone used to drop later finance, tech, and company tags.
+export function categoryBucketIds(tagIds, catalog) {
   const classification = classificationOf(catalog);
+  const ids = [];
+  const seen = new Set();
   for (const raw of Array.isArray(tagIds) ? tagIds : []) {
     const id = String(raw || '').trim();
     if (!id || id === UNTAGGED_CATEGORY_ID) continue;
     const grouped = classification.group(id);
-    if (grouped) return grouped;
+    if (!grouped || seen.has(grouped)) continue;
+    seen.add(grouped);
+    ids.push(grouped);
   }
-  return UNTAGGED_CATEGORY_ID;
-}
-
-export const SOCIAL_X_CATEGORY_ID = 'social_x';
-export const SOCIAL_XUEQIU_CATEGORY_ID = 'social_xueqiu';
-
-export function socialCategoryId(item) {
-  const provider = String(item?.provider || '').toLowerCase();
-  if (provider === 'x' || provider === 'twitter') return SOCIAL_X_CATEGORY_ID;
-  if (provider === 'xueqiu') return SOCIAL_XUEQIU_CATEGORY_ID;
-  return '';
+  return ids.length ? ids : [UNTAGGED_CATEGORY_ID];
 }
 
 function categoryLabel(id, classification) {
   if (id === UNTAGGED_CATEGORY_ID) return UNTAGGED_CATEGORY_LABEL;
-  if (id === SOCIAL_X_CATEGORY_ID) return 'X';
-  if (id === SOCIAL_XUEQIU_CATEGORY_ID) return '雪球';
   return classification.tags.find((tag) => tag.id === id)?.name || id;
 }
 
@@ -88,7 +86,7 @@ function categoryOrder(classification) {
     seen.add(id);
     order.push(id);
   }
-  order.push(SOCIAL_X_CATEGORY_ID, SOCIAL_XUEQIU_CATEGORY_ID, UNTAGGED_CATEGORY_ID);
+  order.push(UNTAGGED_CATEGORY_ID);
   return order;
 }
 
@@ -98,17 +96,18 @@ export function bucketCategoryItems(items, catalog) {
   for (const item of items || []) {
     const sourceId = String(item?.sourceId || item?.id || '').trim();
     if (!sourceId) continue;
-    const tagged = primaryCategoryId(item?.tags, classification);
-    const id = tagged !== UNTAGGED_CATEGORY_ID ? tagged : (socialCategoryId(item) || UNTAGGED_CATEGORY_ID);
-    const bucket = grouped.get(id) || [];
-    bucket.push({
+    const row = {
       sourceId,
       title: clipCategoryText(item?.title, CATEGORY_TITLE_CHARS),
       excerpt: clipCategoryText(item?.excerpt || item?.summary || item?.title, CATEGORY_EXCERPT_CHARS),
       tags: (Array.isArray(item?.tags) ? item.tags : []).map((tag) => String(tag || '').trim()).filter(Boolean),
       eventAt: Number(item?.eventAt) || 0,
-    });
-    grouped.set(id, bucket);
+    };
+    for (const id of categoryBucketIds(item?.tags, classification)) {
+      const bucket = grouped.get(id) || [];
+      bucket.push(row);
+      grouped.set(id, bucket);
+    }
   }
   const buckets = [];
   const seen = new Set();
@@ -319,6 +318,79 @@ function editionStatus(categories) {
   return 'partial';
 }
 
+const STOCK_TAG_IDS = new Set(['corporate_results', 'corporate_financing']);
+
+export function censusCategoryTags(items, buckets, catalog) {
+  const classification = classificationOf(catalog);
+  const directions = catalog?.reading?.directionByTag || {};
+  const tagged = new Map();
+  let nonempty = 0;
+  let missing = 0;
+  const direction = { finance: 0, tech: 0, policy: 0, stock: 0 };
+  for (const item of items || []) {
+    const raw = Array.isArray(item?.tags) ? item.tags : [];
+    const known = raw.map((id) => classification.group(String(id || '').trim())).filter(Boolean);
+    if (!raw.length) missing += 1;
+    else if (!known.length) missing += 1;
+    else nonempty += 1;
+    const seenDir = new Set();
+    for (const id of known) {
+      tagged.set(id, (tagged.get(id) || 0) + 1);
+      if (STOCK_TAG_IDS.has(id) && !seenDir.has('stock')) {
+        seenDir.add('stock');
+        direction.stock += 1;
+      }
+      const name = directions[id] || '';
+      if (name && !seenDir.has(name)) {
+        seenDir.add(name);
+        direction[name] += 1;
+      }
+    }
+  }
+  const bucketed = new Map();
+  let eventSources = 0;
+  for (const bucket of buckets || []) {
+    if (!bucket || bucket.id === UNTAGGED_CATEGORY_ID) continue;
+    bucketed.set(bucket.id, (bucket.items || []).length);
+    const cited = new Set((bucket.events || []).flatMap((event) => event.sourceIds || []));
+    eventSources += cited.size;
+  }
+  const tags = [...new Set([...tagged.keys(), ...bucketed.keys()])].sort();
+  return {
+    ingested: (items || []).length,
+    missing,
+    nonempty,
+    direction,
+    tags: tags.map((id) => ({
+      id,
+      label: categoryLabel(id, classification),
+      tagged: tagged.get(id) || 0,
+      bucketed: bucketed.get(id) || 0,
+    })),
+    untagged: (buckets || []).find((bucket) => bucket.id === UNTAGGED_CATEGORY_ID)?.items.length || 0,
+    eventSources,
+  };
+}
+
+export function formatCategoryTagCensus(census, hourStart) {
+  const tags = (census?.tags || []).map((row) => `${row.id}:${row.tagged}>${row.bucketed}`).join(',') || '-';
+  const direction = census?.direction || {};
+  return [
+    '[worker] hourly-category-tags',
+    `hourStart=${Number.isFinite(hourStart) ? hourStart : '-'}`,
+    `ingested=${census?.ingested || 0}`,
+    `noTag=${census?.missing || 0}`,
+    `tagged=${census?.nonempty || 0}`,
+    `untaggedBucket=${census?.untagged || 0}`,
+    `finance=${direction.finance || 0}`,
+    `tech=${direction.tech || 0}`,
+    `stock=${direction.stock || 0}`,
+    `policy=${direction.policy || 0}`,
+    `eventSources=${census?.eventSources || 0}`,
+    `tags=${tags}`,
+  ].join(' ');
+}
+
 export function createHourlyCategoryService({
   repository,
   taggingRepository = null,
@@ -326,9 +398,11 @@ export function createHourlyCategoryService({
   catalog = { tags: [] },
   agentRuntime = null,
   excerptPort = null,
+  nodeTagPort = null,
   enabled = false,
   now = () => Date.now(),
   maxItems = CATEGORY_BUCKET_ITEM_LIMIT,
+  log = console.log,
 } = {}) {
   const classification = classificationOf(catalog);
 
@@ -341,6 +415,13 @@ export function createHourlyCategoryService({
       return row?.id && Number.isFinite(at) && at >= window.startAt && at < window.endAt;
     });
     const tagMap = await tagsBySource(taggingRepository, workspaceId, candidates);
+    let nodeTags = new Map();
+    if (typeof nodeTagPort === 'function') {
+      try {
+        const loaded = await nodeTagPort(workspaceId, candidates.map((row) => row.id));
+        if (loaded instanceof Map) nodeTags = loaded;
+      } catch { /* 信息树标签读不到时仍用 resource_taggings */ }
+    }
     const excerpts = new Map();
     if (excerptPort) {
       for (const row of await excerptPort(workspaceId, candidates) || []) {
@@ -349,22 +430,24 @@ export function createHourlyCategoryService({
     }
     const prepared = candidates.map((row) => {
       const key = categoryTaggingKey(row.id);
-      const tags = key ? tagMap.get(`${key.resourceType}:${key.resourceId}`) : undefined;
+      const stored = key ? tagMap.get(`${key.resourceType}:${key.resourceId}`) : undefined;
       const looked = excerpts.get(row.id);
+      const tags = Array.isArray(stored) ? [...stored] : [];
+      for (const id of nodeTags.get(row.id) || []) {
+        if (id && !tags.includes(id)) tags.push(id);
+      }
       return {
         sourceId: row.id,
         title: looked?.title || row.title || '',
         excerpt: looked?.excerpt || row.excerpt || row.summary || row.title || '',
-        tags: Array.isArray(tags) ? tags : [],
+        tags,
         eventAt: Number(row.eventAt) || 0,
-        provider: row.provider || '',
       };
     });
     const buckets = bucketCategoryItems(prepared, classification);
     const untaggedCount = buckets.find((bucket) => bucket.id === UNTAGGED_CATEGORY_ID)?.items.length || 0;
     const categories = [];
     for (const bucket of buckets) {
-      const social = bucket.id === SOCIAL_X_CATEGORY_ID || bucket.id === SOCIAL_XUEQIU_CATEGORY_ID;
       const untagged = bucket.id === UNTAGGED_CATEGORY_ID;
       const modelCap = untagged ? Math.min(maxItems, UNTAGGED_MODEL_ITEMS) : maxItems;
       const sent = bucket.items.slice(0, modelCap);
@@ -396,17 +479,6 @@ export function createHourlyCategoryService({
           generatedAt: now(),
         };
       };
-      if (social) {
-        const covered = coverCategoryEvents([], bucket.items, CATEGORY_EVENT_STORE_LIMIT);
-        categories.push({
-          ...base,
-          events: covered.events,
-          truncated: covered.truncated,
-          status: covered.events.length ? 'ready' : 'failed',
-          generatedAt: now(),
-        });
-        continue;
-      }
       try {
         if (typeof agentRuntime?.run !== 'function') throw new Error('分类小时报没有模型执行器');
         const payload = {
@@ -441,6 +513,11 @@ export function createHourlyCategoryService({
         });
       }
     }
+    log(formatCategoryTagCensus(censusCategoryTags(prepared, categories.map((category) => ({
+      id: category.id,
+      items: buckets.find((bucket) => bucket.id === category.id)?.items || [],
+      events: category.events,
+    })), catalog), hourStart));
     const edition = {
       formatVersion: HOURLY_CATEGORY_FORMAT,
       id: `hcat:${hourStart}`,

@@ -7,6 +7,7 @@ import { resolveHarnessLlm } from '../packages/harness/src/llm-route.js';
 import {
   HOURLY_CATEGORY_TASK,
   bucketCategoryItems,
+  censusCategoryTags,
   coverCategoryEvents,
   categorySourceHref,
   createHourlyCategoryService,
@@ -32,10 +33,13 @@ const catalog = {
     { id: 'ai', name: 'AI' },
     { id: 'ai_compute', name: 'AI算力' },
     { id: 'macro', name: '宏观' },
+    { id: 'market_cn', name: 'A股' },
+    { id: 'corporate_results', name: '企业经营与财报' },
   ],
   reading: {
     version: 'tree-reading-v2',
-    groupByTag: { ai: 'ai', ai_compute: 'ai', macro: 'macro' },
+    groupByTag: { ai: 'ai', ai_compute: 'ai', macro: 'macro', market_cn: 'market_cn', corporate_results: 'corporate_results' },
+    directionByTag: { ai: 'tech', ai_compute: 'tech', macro: 'finance', market_cn: 'finance', corporate_results: 'finance' },
   },
 };
 
@@ -56,25 +60,26 @@ test('primary bucket uses the first catalog tag and groupByTag', () => {
   ], catalog);
   assert.deepEqual(buckets.map((bucket) => [bucket.id, bucket.label, bucket.items.map((row) => row.sourceId)]), [
     ['ai', 'AI', ['feed:a']],
-    ['macro', '宏观', ['feed:b']],
+    ['macro', '宏观', ['feed:a', 'feed:b']],
     ['__untagged__', '待标注', ['feed:c', 'feed:d', 'feed:e']],
   ]);
   const ids = buckets.flatMap((bucket) => bucket.items.map((row) => row.sourceId));
-  assert.equal(new Set(ids).size, ids.length);
-  assert.equal(ids.length, 5);
+  assert.equal(new Set(ids).size, 5);
+  assert.equal(ids.length, 6);
   assert.equal(buckets[0].items[0].excerpt.length <= 200, true);
-  const social = bucketCategoryItems([
-    item('feed:x1', [], { title: 'X 博主' }),
-    item('feed:xq', [], { title: '雪球博主' }),
-    item('feed:plain', []),
-    item('feed:tagged', ['macro']),
-  ].map((row, index) => ({ ...row, provider: ['x', 'xueqiu', 'rss', 'x'][index] })), catalog);
-  assert.deepEqual(social.map((bucket) => [bucket.id, bucket.label, bucket.items.map((row) => row.sourceId)]), [
-    ['macro', '宏观', ['feed:tagged']],
-    ['social_x', 'X', ['feed:x1']],
-    ['social_xueqiu', '雪球', ['feed:xq']],
-    ['__untagged__', '待标注', ['feed:plain']],
-  ]);
+  const census = censusCategoryTags([
+    item('feed:a', ['ai_compute', 'macro']),
+    item('feed:stock', ['corporate_results']),
+    item('feed:none', []),
+  ], buckets, catalog);
+  assert.equal(census.ingested, 3);
+  assert.equal(census.nonempty, 2);
+  assert.equal(census.missing, 1);
+  assert.equal(census.direction.tech, 1);
+  assert.equal(census.direction.finance, 2);
+  assert.equal(census.direction.stock, 1);
+  assert.equal(census.tags.find((row) => row.id === 'macro').tagged, 1);
+  assert.equal(census.tags.find((row) => row.id === 'ai').bucketed, 1);
 });
 
 test('category brief output rejects sourceIds outside the input', () => {
@@ -105,26 +110,45 @@ test('category brief output rejects sourceIds outside the input', () => {
   assert.equal(covered.truncated, false);
 });
 
-test('untagged X and xueqiu blogger posts are listed without Flash', async () => {
+test('a tree tag is kept when resource taggings are empty, and Flash does not drop the other tag', async () => {
   const store = createStore(':memory:');
   try {
-    let calls = 0;
+    const calls = [];
     const service = createHourlyCategoryService({
       repository: store.repositories.hourlyCategory,
       candidatePort: async () => [
-        { id: 'feed:x1', title: 'X 谈到订单', provider: 'x', eventAt: hour + 2 },
-        { id: 'feed:xq', title: '雪球博主谈到利率', provider: 'xueqiu', eventAt: hour + 3 },
+        { id: 'feed:node', title: '树上有宏观标签', eventAt: hour + 2 },
+        { id: 'feed:both', title: '两个正式标签', eventAt: hour + 3 },
       ],
+      taggingRepository: {
+        listTaggings() {
+          return [{ resourceType: 'content-item', resourceId: 'both', tags: ['macro', 'ai_compute'] }];
+        },
+      },
+      nodeTagPort() {
+        return new Map([['feed:node', ['market_cn']]]);
+      },
       catalog,
-      agentRuntime: { async run() { calls += 1; throw new Error('social buckets must not call Flash'); } },
+      agentRuntime: {
+        async run(input) {
+          calls.push(JSON.parse(input.message));
+          const payload = JSON.parse(input.message);
+          return { answer: JSON.stringify({ categoryId: payload.category.id, events: [{ bullet: '只引用第一条。', sourceIds: [payload.items[0].sourceId] }] }) };
+        },
+      },
       now: () => hour + HOUR + 5,
+      log() {},
     });
     const edition = await service.generateHour({ workspaceId: 'local', hourStart: hour });
-    assert.equal(calls, 0);
-    assert.deepEqual(edition.categories.map((category) => [category.id, category.label]), [['social_x', 'X'], ['social_xueqiu', '雪球']]);
-    assert.deepEqual(edition.categories[0].events.map((event) => [event.bullet, event.sourceIds]), [['X 谈到订单', ['feed:x1']]]);
-    assert.deepEqual(edition.categories[1].events.map((event) => [event.bullet, event.sourceIds]), [['雪球博主谈到利率', ['feed:xq']]]);
-    assert.equal(edition.status, 'ready');
+    const ids = edition.categories.map((category) => category.id).sort();
+    assert.deepEqual(ids, ['ai', 'macro', 'market_cn']);
+    const macro = edition.categories.find((category) => category.id === 'macro');
+    assert.equal(macro.inputCount, 1);
+    assert.deepEqual(macro.events.flatMap((event) => event.sourceIds), ['feed:both']);
+    const ai = edition.categories.find((category) => category.id === 'ai');
+    assert.equal(ai.inputCount, 1);
+    assert.ok(ai.events.flatMap((event) => event.sourceIds).includes('feed:both'));
+    assert.equal(calls.length, 3);
   } finally { store.close(); }
 });
 
