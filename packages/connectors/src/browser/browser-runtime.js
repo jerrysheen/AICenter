@@ -1,3 +1,4 @@
+import { isBskDaemonDownError } from './bsk-daemon.js';
 import { BrowserCommandError } from './errors.js';
 
 function buildFetchExpression(url, options = {}) {
@@ -41,6 +42,24 @@ export function parseBrowserJson(payload) {
   }
 }
 
+async function waitForBrowserExtension(provider, waitMs, sleep) {
+  if (!waitMs || typeof provider.health !== 'function') return;
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    let health = null;
+    try {
+      health = await provider.health();
+    } catch {
+      health = null;
+    }
+    if (health?.browserConnected) return;
+    if (health && health.daemonConnected === false) return;
+    const pause = Math.min(500, deadline - Date.now());
+    if (pause <= 0) return;
+    await sleep(pause);
+  }
+}
+
 function createBrowserSession(provider, started) {
   let closed = false;
   const session = {
@@ -81,6 +100,10 @@ export function createBrowserRuntime(options = {}) {
   const provider = options.provider;
   if (!provider) throw new Error('BrowserRuntime 需要 provider');
   const logger = options.logger || console;
+  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const extensionWaitMs = Number.isFinite(Number(options.extensionWaitMs))
+    ? Math.max(0, Number(options.extensionWaitMs))
+    : 8_000;
   const defaultBrowserId = String(options.defaultBrowserId || '').trim();
   const requestedHold = Number(options.maxHoldMs);
   const maxHoldMs = Number.isFinite(requestedHold) && requestedHold >= 1
@@ -121,6 +144,11 @@ export function createBrowserRuntime(options = {}) {
       return provider.health();
     },
 
+    startDaemonWatch(watchOptions = {}) {
+      if (typeof options.daemonWatch !== 'function') return () => {};
+      return options.daemonWatch(watchOptions) || (() => {});
+    },
+
     async withSession(sessionOptions, callback) {
       if (typeof callback !== 'function') throw new Error('withSession 需要 callback');
       return exclusive(async () => {
@@ -128,7 +156,17 @@ export function createBrowserRuntime(options = {}) {
         if (!String(resolvedSessionOptions.browserId || '').trim() && defaultBrowserId) {
           resolvedSessionOptions.browserId = defaultBrowserId;
         }
-        const started = await provider.startSession(resolvedSessionOptions);
+        let started;
+        try {
+          started = await provider.startSession(resolvedSessionOptions);
+        } catch (error) {
+          if (typeof options.ensureDaemon !== 'function' || !isBskDaemonDownError(error)) throw error;
+          const recovered = await options.ensureDaemon('session');
+          const retry = recovered?.action === 'started' || recovered?.reason === 'up';
+          if (!retry) throw error;
+          if (recovered.action === 'started') await waitForBrowserExtension(provider, extensionWaitMs, sleep);
+          started = await provider.startSession(resolvedSessionOptions);
+        }
         const session = createBrowserSession(provider, started);
         try {
           return await callback(session);

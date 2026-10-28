@@ -1,8 +1,23 @@
 import { createBrowserRuntime } from './browser-runtime.js';
+import {
+  bskDaemonWatchEnabled,
+  createBskDaemonSupervisor,
+  defaultBskDaemonLockPath,
+  defaultBskDaemonLogDirectory,
+  startBskDaemonProcess,
+} from './bsk-daemon.js';
 import { createBrowserSkillClient, resolveDefaultBskPath } from './browserskill-client.js';
 
 export { createBrowserRuntime, parseBrowserJson } from './browser-runtime.js';
-export { createBrowserSkillClient, resolveDefaultBskPath } from './browserskill-client.js';
+export { bskCliEnv, createBrowserSkillClient, resolveDefaultBskPath } from './browserskill-client.js';
+export {
+  BSK_DAEMON_START_ARGS,
+  bskDaemonCheckIntervalMs,
+  bskDaemonWatchEnabled,
+  createBskDaemonSupervisor,
+  isBskDaemonDownError,
+  startBskDaemonProcess,
+} from './bsk-daemon.js';
 export {
   BrowserCommandError,
   BrowserError,
@@ -32,6 +47,9 @@ export function createConfiguredBrowserRuntime(options = {}) {
     logger: options.logger,
     defaultBrowserId,
     maxHoldMs,
+    ensureDaemon: options.ensureDaemon,
+    sleep: options.sleep,
+    extensionWaitMs: options.extensionWaitMs,
   });
   const providerName = options.providerName || resolveBrowserProviderName(env);
   const providers = options.providers || {
@@ -42,5 +60,50 @@ export function createConfiguredBrowserRuntime(options = {}) {
   };
   const provider = providers[providerName];
   if (!provider) throw new Error(`BrowserRuntime 没有 ${providerName} provider`);
-  return createBrowserRuntime({ provider, logger: options.logger, defaultBrowserId, maxHoldMs });
+  const root = options.repositoryRoot;
+  const supervise = options.superviseDaemon === true && bskDaemonWatchEnabled(env);
+  let supervisor = null;
+  const runtime = createBrowserRuntime({
+    provider,
+    logger: options.logger,
+    defaultBrowserId,
+    maxHoldMs,
+    sleep: options.sleep,
+    extensionWaitMs: options.extensionWaitMs,
+    ensureDaemon: supervise ? ((reason) => supervisor.ensure(reason)) : options.ensureDaemon,
+    daemonWatch: supervise ? ((watchOptions) => supervisor.watch(watchOptions)) : null,
+  });
+  if (supervise) {
+    const log = options.daemonLog || ((entry) => {
+      const browsers = entry.browsers == null ? '' : ` browsers=${entry.browsers}`;
+      const detail = entry.detail ? ` detail=${entry.detail}` : '';
+      console.log(`[worker] bsk-daemon action=${entry.action} reason=${entry.reason || '-'}${browsers}${detail}`);
+    });
+    supervisor = createBskDaemonSupervisor({
+      env,
+      log,
+      lockPath: options.daemonLockPath === undefined ? defaultBskDaemonLockPath(root) : options.daemonLockPath,
+      sleep: options.sleep,
+      now: options.now,
+      readyTimeoutMs: options.daemonReadyTimeoutMs,
+      restartGapMs: options.daemonRestartGapMs,
+      pollMs: options.daemonPollMs,
+      async status() {
+        if (typeof provider.status !== 'function') {
+          const health = await provider.health?.();
+          if (health?.daemonConnected) return { daemonConnected: true, browsers: health.browsers };
+          return null;
+        }
+        return provider.status();
+      },
+      start: options.startDaemon || (() => startBskDaemonProcess({
+        env,
+        bskPath: options.bskPath || resolveDefaultBskPath({ env, bskPath: env.AI_BSK_PATH, repositoryRoot: root }),
+        cwd: root,
+        logDirectory: options.daemonLogDirectory || defaultBskDaemonLogDirectory(root),
+        repositoryRoot: root,
+      })),
+    });
+  }
+  return runtime;
 }

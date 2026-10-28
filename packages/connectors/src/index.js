@@ -132,16 +132,23 @@ export {
   MARKET_NATIVE_URLS,
 } from './market-native.js';
 export {
+  BSK_DAEMON_START_ARGS,
   BrowserCommandError,
   BrowserError,
   BrowserUnavailableError,
+  bskCliEnv,
+  bskDaemonCheckIntervalMs,
+  bskDaemonWatchEnabled,
   createBrowserRuntime,
   createBrowserSkillClient,
+  createBskDaemonSupervisor,
   createConfiguredBrowserRuntime,
   isBrowserUnavailable,
+  isBskDaemonDownError,
   parseBrowserJson,
   resolveBrowserProviderName,
   resolveDefaultBskPath,
+  startBskDaemonProcess,
 } from './browser/index.js';
 export {
   createTranslateService,
