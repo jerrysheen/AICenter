@@ -675,6 +675,15 @@ export function createAiCenterWorker(options = {}) {
     catalog:categoryCatalog,
     agentRuntime,
     enabled:true,
+    nodeTagPort(workspaceId, sourceIds) {
+      const rows = store.repositories.informationTree.informationHeads?.(workspaceId, sourceIds) || [];
+      const map = new Map();
+      for (const row of rows) {
+        const tagId = String(row?.node?.tagId || '').trim();
+        if (tagId) map.set(row.sourceId, [tagId]);
+      }
+      return map;
+    },
     excerptPort(workspaceId, candidates) {
       const feedIds=candidates.filter((row)=>String(row.id || '').startsWith('feed:')).map((row)=>row.id.slice(5));
       const mediaIds=candidates.filter((row)=>String(row.id || '').startsWith('media:')).map((row)=>row.id.slice(6));

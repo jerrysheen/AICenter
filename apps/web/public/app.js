@@ -1065,10 +1065,13 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const reportPane = view === 'report'
     ? (reportDate ? 'day' : (rest[0] === 'archive' ? 'archive' : rest[0] === 'history' ? 'history' : 'today'))
     : 'today';
-  const hourText = new URLSearchParams(queryPart).get('hour');
+  const reportParams = new URLSearchParams(queryPart);
+  const hourText = reportParams.get('hour');
   const hourNumber = hourText != null && /^\d{1,2}$/.test(hourText) ? Number(hourText) : NaN;
   const reportHour = Number.isInteger(hourNumber) && hourNumber >= 0 && hourNumber <= 23 ? hourNumber : null;
-  const reportNode = view === 'report' ? (new URLSearchParams(queryPart).get('node') || '') : '';
+  const modeText = view === 'report' ? (reportParams.get('mode') || '') : '';
+  const reportMode = modeText === 'daily' || modeText === 'hourly' || modeText === 'discussion' ? modeText : '';
+  const reportNode = view === 'report' ? (reportParams.get('node') || '') : '';
   const feedTab = view === 'feed' && new URLSearchParams(queryPart).get('tab') === 'author' ? 'author' : '';
   const marketTab = view === 'market' && marketPane === 'assets' && new URLSearchParams(queryPart).get('tab') === 'events'
     ? 'events'
@@ -1079,7 +1082,7 @@ function parseLocation(name = (location.hash || '#sources').slice(1)) {
   const podcastChannel = view === 'podcasts' ? String(podcastQuery.get('channel') || '').trim() : '';
   return {
     view, askSessionId, marketPane, assetPane, sourcesPane, settingsPane, inspirePane,
-    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportNode, marketTab, feedTab,
+    selectedWorkPackageId, pageKind, pageId, reportPane, reportDate, reportHour, reportMode, reportNode, marketTab, feedTab,
     stockBoard, podcastPane, podcastChannel,
   };
 }
@@ -1104,6 +1107,7 @@ function rememberOverviewTarget(view, pane = state.tradePane) {
   else if (view === 'report') {
     target = reportDate ? `report/${reportDate}` : 'report';
     if (reportHour != null) target += `?hour=${String(reportHour).padStart(2, '0')}`;
+    else if (reportMode === 'daily' || reportMode === 'discussion' || reportMode === 'hourly') target += `?mode=${reportMode}`;
     if (reportNode) target += `${target.includes('?') ? '&' : '?'}node=${encodeURIComponent(reportNode)}`;
   }
   state.lastOverviewTarget = target;
@@ -1371,6 +1375,7 @@ function setView(name, options = {}) {
     reportPane = parsed.reportPane;
     reportDate = parsed.reportDate;
     reportHour = parsed.reportHour;
+    reportMode = parsed.reportMode || '';
     reportNode = parsed.reportNode || '';
   }
   state.hubLane = overviewLane(view, state.tradePane);
@@ -8239,7 +8244,7 @@ function renderHomeHourlyModule() {
   });
   if (!host) return;
   if (!sections.length) {
-    renderNewsList(host, [], { groupByDay: false, emptyText: edition ? '这一小时没有条目' : '还没有小时报' });
+    renderNewsList(host, [], { groupByDay: false, emptyText: edition ? '本小时暂无入料' : '还没有小时报' });
     return;
   }
   host.replaceChildren();
@@ -8253,7 +8258,7 @@ function renderHomeHourlyModule() {
     const list = document.createElement('div');
     renderNewsList(list, section.items.map((item) => homeHourRow(item, current)), {
       groupByDay: false,
-      emptyText: '这一小时没有条目',
+      emptyText: '本小时暂无入料',
     });
     host.append(label, list);
   }
@@ -13632,15 +13637,28 @@ let dailyBriefSnapshot = { brief: null, loaded: false, error: '' };
 let reportPane = 'today';
 let reportDate = '';
 let reportHour = null;
+let reportMode = '';
 let reportNode = '';
 
 function reportHash() {
   if (reportPane === 'history') return '#report/history';
   if (reportPane === 'archive') return '#report/archive';
   const base = reportDate ? `#report/${reportDate}` : '#report';
-  if (reportHour == null) return reportNode ? `${base}?node=${encodeURIComponent(reportNode)}` : base;
+  if (reportHour == null) {
+    const mode = reportMode === 'daily' || reportMode === 'discussion' || reportMode === 'hourly' ? reportMode : '';
+    const withMode = mode ? `${base}?mode=${mode}` : base;
+    return reportNode ? `${withMode}${mode ? '&' : '?'}node=${encodeURIComponent(reportNode)}` : withMode;
+  }
   const hash = `${base}?hour=${String(reportHour).padStart(2, '0')}`;
   return reportNode ? `${hash}&node=${encodeURIComponent(reportNode)}` : hash;
+}
+
+function reportMountMode() {
+  if (reportPane === 'history' || reportPane === 'archive') return 'daily';
+  if (reportHour != null) return 'hourly';
+  if (reportMode === 'daily' || reportMode === 'discussion' || reportMode === 'hourly') return reportMode;
+  if (reportPane === 'day') return 'daily';
+  return 'hourly';
 }
 let reportHistory = { items: [], loaded: false, error: '' };
 let reportDay = { date: '', brief: null, loaded: false, error: '' };
@@ -13671,6 +13689,8 @@ function ensureBriefPage() {
     reportHour = nextHour;
     reportNode = nextNode;
     reportDate = nextDate;
+    if (extra && Object.hasOwn(extra, 'mode')) reportMode = extra.mode || '';
+    else if (nextHour != null) reportMode = '';
     if (document.body.dataset.view === 'report') rememberOverviewTarget('report');
     commitReportHistory({
       previous,
@@ -14191,6 +14211,7 @@ function renderReport() {
     archive:reportPane==='archive',
     hour:reportPane==='history' || reportPane==='archive' ? null : reportHour,
     node:reportPane==='history' || reportPane==='archive' ? '' : reportNode,
+    mode:reportMountMode(),
   });
 }
 

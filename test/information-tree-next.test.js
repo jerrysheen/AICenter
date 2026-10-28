@@ -577,3 +577,16 @@ test('truncated groups split at most three times and record the split count', as
     f.store.close();
   }
 });
+
+test('a closed hour with no candidates is empty instead of a ready shell', async () => {
+  const hour = Math.floor(Date.now() / H) * H - H;
+  const f = fixture({ now: () => hour + H + 1000, candidatePort: async () => [] });
+  try {
+    const edition = await f.service.generateHour({ hourStart: hour });
+    assert.equal(edition.status, 'empty');
+    assert.deepEqual(edition.roots, []);
+    assert.deepEqual(edition.inputIds, []);
+    assert.equal(edition.published, true);
+    assert.equal(f.calls.length, 0);
+  } finally { f.store.close(); }
+});

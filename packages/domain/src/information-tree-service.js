@@ -646,6 +646,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       inputRows=inputs.filter(node=>covered.has(node.id));
       status=inputRows.length ? 'partial' : 'failed';
     }
+    if(layer==='hourly' && status==='ready' && !modules.length && !inputRows.length) status='empty';
     let attemptMeta={};
     if(layer==='hourly' && status==='failed') {
       const prior=priorEdition(layer,window,s.workspaceId);

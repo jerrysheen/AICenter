@@ -1148,7 +1148,7 @@ test('desktop and phone empty hours stay quiet while neighbors still load', asyn
     assert.equal(root.querySelector('h3').textContent, '有内容的小时');
     const prefetched = hourCalls(calls, blank.window.startAt).length;
     await stepToEarlier(root, mobile);
-    assert.equal(root.querySelector('.tree-hour-empty').textContent, '这一小时没有条目');
+    assert.equal(root.querySelector('.tree-hour-empty').textContent, '本小时暂无入料');
     assert.equal(root.querySelector('h3'), null);
     assert.equal(root.querySelectorAll('button').some((item) => String(item.textContent).includes('读取失败')), false);
     assert.deepEqual(toasts, []);

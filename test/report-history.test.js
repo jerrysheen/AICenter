@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { commitReportHistory, reportHistoryAction, reportListHash, reportViewOwnsScroll, stackReportNode } from '../apps/web/public/report-history.js';
+import { commitReportHistory, reportHistoryAction, reportListHash, reportModeHash, reportViewOwnsScroll, stackReportNode } from '../apps/web/public/report-history.js';
+
+test('daily and discussion modes stay in the report hash', () => {
+  assert.equal(reportModeHash('#report', 'daily'), '#report?mode=daily');
+  assert.equal(reportModeHash('#report?hour=20', 'discussion'), '#report?mode=discussion');
+  assert.equal(reportModeHash('#report/2026-10-28?hour=07', 'daily'), '#report/2026-10-28?mode=daily');
+  assert.equal(reportModeHash('#feed', 'hourly'), '#report?mode=hourly');
+});
 
 test('report scroll stays with the hourly page once that hour has a saved position', () => {
   assert.equal(reportViewOwnsScroll('report', true), true);

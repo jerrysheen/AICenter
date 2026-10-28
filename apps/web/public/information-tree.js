@@ -7,6 +7,7 @@ import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import { createListSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
 import { layoutHourlyDual, paintHourlyCategory } from './hourly-category-view.js?v=dev';
+import { reportModeHash } from './report-history.js?v=dev';
 
 // 贴在标题栏下面的行不算可见。行的顶要落到 coverBottom 上或更下面，只露出一截底边的高行也不算。
 export function briefVisibleAnchor(rows, coverBottom = 0) {
@@ -608,7 +609,7 @@ export function createInformationTreePage(host) {
     if(next===mode && !showMaterials) return;
     if(next!==mode) rememberIssue();
     mode=next;showMaterials=false;openedId='';
-    if(mode==='daily') clearHourQuery();
+    writeBriefMode(next);
     const saved=memory[mode] || {};
     direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);
     if(tag) tag.value=saved.tag || '*';
@@ -687,6 +688,18 @@ export function createInformationTreePage(host) {
     pendingNodeId='';
     host.syncHour?.(hourClock(selectedHourStart), {node:''});
     row.scrollIntoView?.({block:'center'});
+  }
+  function briefDateFromHash() {
+    const path = String(globalThis.location?.hash || '').replace(/^#/, '').split('?')[0];
+    const match = /^report\/(\d{4}-\d{2}-\d{2})$/.exec(path);
+    return match ? match[1] : '';
+  }
+  function writeBriefMode(next) {
+    if (suppressHourHash) return;
+    if (next === 'hourly' && selectedHourStart) return writeHourHash(selectedHourStart);
+    const hash = reportModeHash(globalThis.location?.hash, next);
+    host.syncHour?.(null, { hash, date: briefDateFromHash(), node: '', mode: next });
+    replaceLocationHash(hash);
   }
   function clearHourQuery(){
     const loc=globalThis.location;
@@ -1401,7 +1414,7 @@ export function createInformationTreePage(host) {
     setPeriodMeta('');
   }
   function showEmptyHour() {
-    const line=el('p','这一小时没有条目','tree-hour-empty');
+    const line=el('p','本小时暂无入料','tree-hour-empty');
     return line;
   }
   async function loadReadingIndex() {
@@ -1665,7 +1678,8 @@ export function createInformationTreePage(host) {
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
-    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly' ? 'hourly' : 'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');if(mode==='hourly')root.classList.add('is-hourly');
+    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly'||options.mode==='discussion'?options.mode:'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');if(mode==='hourly')root.classList.add('is-hourly');
+    if(mode==='hourly' && pendingClockHour==null && !dateFilter) pendingClockHour=hourClock(Date.now());
     if(options.resetSelection){selected=null;viewKey='';shownKey='';}
     const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
     const modeTabs=el('div','','tree-mode-tabs channel-tabs');modeTabs.setAttribute('role','tablist');modeTabs.setAttribute('aria-label','简报');
@@ -1737,5 +1751,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,resume,stop,suspend,captureScroll(){rememberPosition();},isSettled(){return settled;},selectHour,showingHour,hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,resume,stop,suspend,captureScroll(){rememberPosition();},isSettled(){return settled;},selectHour,showingHour,switchMode,currentMode(){return mode;},hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }
