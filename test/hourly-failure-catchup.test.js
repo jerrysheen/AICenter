@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {createStore} from '../packages/database/src/index.js';
 import {
   attemptRetryDue,
@@ -9,17 +10,22 @@ import {
   hourlyRetryLaneHourStarts,
 } from '../packages/runtime/src/information-tree-module.js';
 import {
+  allowHourlyScheduleEnqueue,
   createReportJobHandlers,
+  ensureHourlyDigestSchedule,
   ensureHourlyFailureCatchupSchedule,
   HOURLY_FAILURE_CATCHUP_JOB_TYPE,
   hourlyFailureCatchupLimit,
   hourlyFailureCatchupMinutes,
+  hourlyNoCatchup,
+  REPORT_HOURLY_JOB_TYPE,
 } from '../packages/runtime/src/report-module.js';
 
 const H = 3600000;
 const at = Date.UTC(2026, 9, 21, 6, 20);
 const latest = Math.floor(at / H) * H - H;
 const disabled = {AI_CENTER_HOURLY_DISABLED: '1'};
+const catchupOn = {AI_CENTER_HOURLY_NO_CATCHUP: '0'};
 
 function failed(hour, retryAt = at - 1000, inputIds = [`node-${hour}`]) {
   return {
@@ -101,7 +107,7 @@ test('hours with no saved head fill the slots left after due failures', () => {
   };
   const store = createStore(':memory:');
   try {
-    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2, env: catchupOn});
     assert.equal(jobs.some((job) => job.input.hourStart === ready), false);
     assert.deepEqual(jobs.map((job) => job.input.hourStart), [gap, gap + H]);
   } finally {
@@ -144,14 +150,14 @@ test('the scheduled check requeues a due failure even when a newer node is uncov
   const store = createStore(':memory:');
   try {
     assert.deepEqual(enqueueDueFailedHourRefreshes(store, service, 'local', at, {env: disabled}), []);
-    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2, env: catchupOn});
     assert.deepEqual(jobs.map((job) => job.input.hourStart), [h10, h11]);
     assert.deepEqual(jobs.map((job) => job.priority), [-1, -1]);
     assert.equal(jobs[0].availableAt, at);
-    const again = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    const again = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2, env: catchupOn});
     assert.deepEqual(again.map((job) => job.input.hourStart), [fresh, latest]);
     assert.deepEqual(again.map((job) => job.priority), [-1, 0]);
-    const holes = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    const holes = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2, env: catchupOn});
     assert.deepEqual(holes.map((job) => job.input.hourStart), [latest - 23 * H, latest - 22 * H]);
     assert.deepEqual(holes.map((job) => job.priority), [-1, -1]);
     assert.equal(store.listOpenJobs('report.hourly.extract').length, 6);
@@ -183,7 +189,7 @@ test('a due failed hour parked below the retry lane is promoted instead of left 
       input: {hourStart: hour + H},
     };
     assert.deepEqual([...hourlyRetryLaneHourStarts([parked, running])], [hour + H]);
-    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    const jobs = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2, env: catchupOn});
     assert.equal(jobs[0].id, parked.id);
     assert.equal(jobs[0].priority, -1);
     assert.equal(jobs[0].availableAt, at);
@@ -194,7 +200,7 @@ test('a due failed hour parked below the retry lane is promoted instead of left 
     assert.equal(open.length, 2);
     assert.equal(open.find((job) => job.id === parked.id).priority, -1);
     assert.equal(open.find((job) => job.id === parked.id).availableAt, at);
-    const next = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2});
+    const next = enqueueDueFailedHourRefreshes(store, service, 'local', at, {limit: 2, env: catchupOn});
     assert.deepEqual(next.map((job) => job.input.hourStart), [latest - 22 * H, latest - 21 * H]);
     assert.deepEqual(next.map((job) => job.priority), [-1, -1]);
   } finally {
@@ -202,41 +208,112 @@ test('a due failed hour parked below the retry lane is promoted instead of left 
   }
 });
 
-test('failure catch-up schedule scans on an interval and the handler enqueues the due hours', async () => {
+test('failure catch-up stays off unless AI_CENTER_HOURLY_NO_CATCHUP=0', async () => {
+  assert.equal(hourlyNoCatchup({}), true);
+  assert.equal(hourlyNoCatchup({AI_CENTER_HOURLY_NO_CATCHUP: ''}), true);
+  assert.equal(hourlyNoCatchup({AI_CENTER_HOURLY_NO_CATCHUP: '1'}), true);
+  assert.equal(hourlyNoCatchup({AI_CENTER_HOURLY_NO_CATCHUP: '0'}), false);
+  assert.equal(allowHourlyScheduleEnqueue({jobType: HOURLY_FAILURE_CATCHUP_JOB_TYPE}, {}), false);
+  assert.equal(allowHourlyScheduleEnqueue({jobType: REPORT_HOURLY_JOB_TYPE}, {}), true);
+  assert.equal(allowHourlyScheduleEnqueue({jobType: HOURLY_FAILURE_CATCHUP_JOB_TYPE}, catchupOn), true);
+  const worker = readFileSync(new URL('../apps/worker/src/worker.js', import.meta.url), 'utf8');
+  assert.match(worker, /AI_CENTER_HOURLY_NO_CATCHUP=0/);
+  assert.match(worker, /ensureHourlyDigestSchedule\(store,Date\.now\(\),\{minute:articleStrategy \? 30 : 0,env\}\)/);
+  assert.match(worker, /ensureHourlyFailureCatchupSchedule\(store, Date\.now\(\), \{env\}\)/);
+
   const empty = createStore(':memory:');
   try {
     assert.equal(ensureHourlyFailureCatchupSchedule(empty, at, {env: disabled}), null);
   } finally { empty.close(); }
+
   const store = createStore(':memory:');
   try {
-    const created = ensureHourlyFailureCatchupSchedule(store, at, {});
+    const created = ensureHourlyFailureCatchupSchedule(store, at, {env: {}});
+    assert.equal(created.enabled, false);
     assert.equal(created.jobType, HOURLY_FAILURE_CATCHUP_JOB_TYPE);
     assert.equal(created.schedule.intervalMinutes, 10);
-    assert.equal(created.nextRunAt, at);
-    const kept = ensureHourlyFailureCatchupSchedule(store, at + 5 * 60_000, {});
-    assert.equal(kept.nextRunAt, at);
+    const hourly = ensureHourlyDigestSchedule(store, at, {minute: 0, env: {}});
+    assert.equal(hourly.enabled, true);
+    assert.equal(hourly.key, 'report.hourly.default');
     const now = Date.now();
     const ended = Math.floor(now / H) * H - H;
     const h10 = ended - 2 * H;
     const h11 = ended - H;
     const information = [node(h10), node(h11)];
+    const informationService = {
+      list() {
+        return {
+          hours: [h10, h11].map((hour) => ({attempt: failed(hour, now - 1000), edition: null})),
+          information,
+        };
+      },
+      node(_workspace, id) { return information.find((item) => item.id === id) || null; },
+    };
+    assert.deepEqual(enqueueDueFailedHourRefreshes(store, informationService, 'local', now, {limit: 2, env: {}}), []);
+    const blocked = createReportJobHandlers({
+      reportService: {generateDailyReport() {}},
+      informationService,
+      env: {},
+    });
+    const skipped = await blocked[HOURLY_FAILURE_CATCHUP_JOB_TYPE]({}, {store});
+    assert.equal(skipped.status, 'skipped');
+    assert.equal(skipped.reason, 'no-catchup');
+    assert.equal(skipped.enqueued, 0);
+    assert.equal(store.listOpenJobs('report.hourly.extract').length, 0);
+
+    const restored = ensureHourlyFailureCatchupSchedule(store, at, {env: catchupOn});
+    assert.equal(restored.enabled, true);
+    assert.equal(restored.nextRunAt, at);
+    const kept = ensureHourlyFailureCatchupSchedule(store, at + 5 * 60_000, {env: catchupOn});
+    assert.equal(kept.enabled, true);
+    assert.equal(kept.nextRunAt, at);
     const handlers = createReportJobHandlers({
       reportService: {generateDailyReport() {}},
-      informationService: {
-        list() {
-          return {
-            hours: [h10, h11].map((hour) => ({attempt: failed(hour, now - 1000), edition: null})),
-            information,
-          };
-        },
-        node(_workspace, id) { return information.find((item) => item.id === id) || null; },
-      },
+      informationService,
+      env: catchupOn,
     });
     const result = await handlers[HOURLY_FAILURE_CATCHUP_JOB_TYPE]({}, {store});
     assert.equal(result.status, 'catchup');
     assert.deepEqual(result.hours, [h10, h11]);
     assert.equal(store.listOpenJobs('report.hourly.extract').length, 2);
+    const turnedOff = ensureHourlyFailureCatchupSchedule(store, at + 6 * 60_000, {env: {}});
+    assert.equal(turnedOff.enabled, false);
+    assert.equal(turnedOff.nextRunAt, at);
   } finally {
     store.close();
   }
+});
+
+test('a retryable failed hour does not enqueue a reading-class follow-up while catch-up is off', async () => {
+  const hour = 22 * H;
+  const jobs = [];
+  const store = {
+    listOpenJobs() { return jobs.filter((job) => job.status === 'queued'); },
+    createJob(input) {
+      const job = {id: `job-${jobs.length}`, status: 'queued', type: input.type, workspaceId: input.workspaceId, input: input.input, availableAt: input.availableAt};
+      jobs.push(job);
+      return job;
+    },
+  };
+  const digest = {
+    id: 'edition:failed', status: 'failed', terminal: false, published: false,
+    window: {startAt: hour, endAt: hour + H}, pendingIds: ['pending-1'],
+    pending: [{id: 'pending-1', reason: 'information-not-ready', retryable: false}],
+    groupFailures: [{id: 'g', reason: 'budget-deferred', retryable: true, retryAt: hour}],
+  };
+  const handlersFor = (env) => createReportJobHandlers({
+    reportService: {generateDailyReport() {}},
+    informationService: {async generateHourlyDigests() { return [digest]; }},
+    treeService: {},
+    readingHour: {enabled: true, async scoreWindow() {
+      return {readingErrors: [], snapshot: {items: [{disposition: 'classification-failed'}]}};
+    }},
+    env,
+  });
+  await assert.rejects(handlersFor({})['report.hourly.extract']({hourStart: hour}, {store}), {message: '小时浓缩临时失败；成功分类及检查点已保留'});
+  assert.equal(jobs.filter((job) => job.input?.followUp).length, 0);
+  assert.equal(jobs.some((job) => job.type === 'report.information.prepare'), true);
+  jobs.length = 0;
+  await assert.rejects(handlersFor(catchupOn)['report.hourly.extract']({hourStart: hour}, {store}), {message: '小时浓缩临时失败；成功分类及检查点已保留'});
+  assert.equal(jobs.filter((job) => job.input?.followUp === 'classification-deferred').length, 1);
 });

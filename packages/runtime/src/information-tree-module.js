@@ -1,5 +1,5 @@
 import {PrepareTreeInformationInputSchema} from '../../contracts/src/information-tree.js';
-import {hourlyFailureCatchupLimit,hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
+import {hourlyFailureCatchupLimit,hourlyNoCatchup,hourlyRefreshAvailableAt,hourlyReportDisabled} from './report-module.js';
 export const TREE_PREPARE_JOB_TYPE='report.information.prepare';
 export const informationTreeManifest={id:'report.information',version:'3.1.0',capabilities:['report.information.prepare'],jobTypes:[TREE_PREPARE_JOB_TYPE]};
 const HOUR=3600000;
@@ -117,7 +117,7 @@ export function dueFailedHourCatchupPlan({at, rows = [], openHourStarts = new Se
 }
 
 export function enqueueDueFailedHourRefreshes(store, service, workspaceId = 'local', at = Date.now(), {limit, env = process.env, windowHours = 24} = {}) {
-  if (hourlyReportDisabled(env) || !store?.createJob || !store?.listOpenJobs || typeof service?.list !== 'function') return [];
+  if (hourlyReportDisabled(env) || hourlyNoCatchup(env) || !store?.createJob || !store?.listOpenJobs || typeof service?.list !== 'function') return [];
   const latest = Math.floor(at / HOUR) * HOUR - HOUR;
   const span = Number.isInteger(windowHours) && windowHours >= 1 && windowHours <= 24 ? windowHours : 24;
   const oldest = latest - (span - 1) * HOUR;
