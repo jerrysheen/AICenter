@@ -137,14 +137,15 @@ export function createBriefPage(host) {
   function callApi(path, options){return host.api(path,{...(options||{}),signal:inflight.signal});}
   const manifestPipeline=data=>typeof data?.pipeline==='string' && data.pipeline ? data.pipeline : '';
   const manifestProvesTree=data=>data?.pipeline==='tree-v3' || (data?.pipeline===undefined && Array.isArray(data?.information) && data.information.some(n=>n?.validatorVersion==='tree-response-v3.1.0'));
-  const loadTreeManifest=({force=false}={})=>{
-    if(!force && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
-    if(treeManifestRequest)return treeManifestRequest;
-    const identity=s.identity,cacheEpoch=treeCacheEpoch,endAt=Date.now()+1,signal=inflight.signal;
+  const manifestPath=(spanMs)=>{const endAt=Date.now()+1;return `/api/v1/reports/tree?view=index&startAt=${endAt-spanMs}&endAt=${endAt}`;};
+  const loadTreeManifest=({force=false,spanMs=7*86400000}={})=>{
+    if(!force && spanMs>=7*86400000 && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
+    if(spanMs>=7*86400000 && treeManifestRequest)return treeManifestRequest;
+    const identity=s.identity,cacheEpoch=treeCacheEpoch,signal=inflight.signal;
     const same=()=>!signal.aborted && identity===s.identity && cacheEpoch===treeCacheEpoch;
-    const pending=callApi(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
+    const pending=callApi(manifestPath(spanMs)).then(data=>{
       const pipeline=manifestPipeline(data);
-      if(same() && pipeline){treeManifest=data;treeManifestAt=Date.now();}
+      if(same() && pipeline && spanMs>=7*86400000){treeManifest=data;treeManifestAt=Date.now();}
       if(pipeline || manifestProvesTree(data)) return data;
       if(same() && treeManifest) return treeManifest;
       throw Object.assign(new Error('简报刊期不完整'),{code:'incomplete-manifest'});
@@ -153,7 +154,8 @@ export function createBriefPage(host) {
       if(same() && treeManifest) return treeManifest;
       throw error;
     }).finally(()=>{if(treeManifestRequest===pending)treeManifestRequest=null;});
-    treeManifestRequest=pending;return pending;
+    if(spanMs>=7*86400000) treeManifestRequest=pending;
+    return pending;
   };
   const navigate=(page)=>host.navigate ? host.navigate(`report${page ? '/'+page : ''}`) : mount(root,{history:page==='history',archive:page==='archive'});
   const tree=createInformationTreePage({...host,loadTreeManifest,history:()=>navigate('history'),latest:()=>navigate(''),archive:()=>navigate('archive')});
@@ -269,7 +271,10 @@ export function createBriefPage(host) {
           },10000);
         } else readingSkeleton(root);
       }
-      const manifest=await loadTreeManifest().catch(()=>null);
+      const recentHour=treeMode==='hourly' && !history && !archive && !date;
+      let manifest=await (recentHour ? loadTreeManifest({spanMs:6*3600000}) : loadTreeManifest()).catch(()=>null);
+      const week=recentHour ? loadTreeManifest().catch(()=>null) : null;
+      if(recentHour && (!manifest || !manifestProvesTree(manifest))) manifest=await week;
       clearTimeout(slow);
       if(token!==generation)return;
       // During a rolling upgrade the older reader lacks pipeline; independently prepared
@@ -281,6 +286,7 @@ export function createBriefPage(host) {
         await tree.mount(root,{manifest,date,history,mode:treeMode,hour:clockHour,node:focusId,resetSelection:true});
         if(token!==generation)return;
         treeReady=true;
+        if(week) week.then(data=>{if(token===generation && data) tree.acceptManifest?.(data);});
         return;
       }
       if(!manifest || !manifestPipeline(manifest)){
