@@ -48,7 +48,11 @@ import {
   POINTS_SEGMENT_KIND,
   acceptCompiledArticle,
   chaptersCoverParts,
+  compileAnchorCoverage,
+  compileBatchKey,
+  compileMaterialBatches,
   compilePrompt,
+  joinCompiledBlocks,
   fallbackEpisodeChapters,
   longVideoCallBudget,
   longVideoPartBounds,
@@ -65,8 +69,9 @@ import {
 } from '../../domain/src/gemma-long-video.js';
 
 // 正文默认走现有 Gemma 26B 翻译池，只打官方 endpoint，不新接计费服务，也不在这里读写密钥。
-// 新开的整理：按段并行 Gemma 26B 写 2～5 个事点。Flash Lite 一次把事点统编成一篇长文。
-// 统编失败就降级到切章并把事点接上，不再润色第二轮。flash-polish 和 oneshot 不走这条路径。
+// 新开的整理：按段并行 Gemma 26B 写 2～5 个事点。Flash Lite 按事点块分批统编，再拼成一篇。
+// 短集一批写完。不设成稿字数门槛。统编失败就降级到切章并把事点接上，不再润色第二轮。
+// flash-polish 和 oneshot 不走这条路径。
 // 已经 ready 的 parallel-segments 和 chapter-dialogue 不自动重写。
 // 进行中的旧要点稿仍接着写小节。段上还不是事点的，丢掉旧正文，用一次事点重写。
 // 豆包只在引擎显式写成 doubao 时使用。
@@ -777,6 +782,13 @@ async function organizeParallelSegments({ state, deps, signal, day, row, repairi
   }
 }
 
+function clearCompiledDraft(state) {
+  state.compiledArticle = '';
+  state.compiledBlocks = [];
+  state.compileBatchKey = '';
+  state.compileCoverage = null;
+}
+
 async function compilePointsOrFallback({ state, deps, signal, day, row, status, persist, touch, pause, halted, stop }) {
   if (state.compiledArticle) return null;
   if (state.mergeFallback === MERGE_CHAPTER_CONCAT && chaptersCoverParts(state.chapters, state.parts.length)) return null;
@@ -788,29 +800,58 @@ async function compilePointsOrFallback({ state, deps, signal, day, row, status, 
   }
   const summaryStopped = halted();
   if (summaryStopped) return summaryStopped;
+  const batches = compileMaterialBatches(state.parts);
+  const key = compileBatchKey(batches);
+  if (state.compileBatchKey !== key) {
+    state.compiledBlocks = [];
+    state.compileBatchKey = key;
+  }
   const flash = articleFlash(deps);
-  if (flash) {
+  if (flash && batches.length) {
     const calls = callCounts();
+    const blocks = state.compiledBlocks.slice();
     try {
-      touch();
-      calls.flash += 1;
-      const result = await withUpstreamRetry(deps, () => flash({
-        system: EPISODE_COMPILE_SYSTEM,
-        prompt: compilePrompt(state.parts, row?.title || ''),
-      }));
-      if (signal?.aborted) return pause('deadline');
-      const article = acceptCompiledArticle(result?.text);
+      for (let index = 0; index < batches.length; index += 1) {
+        if (acceptCompiledArticle(blocks[index])) continue;
+        const stopped = halted();
+        if (stopped) return stopped;
+        touch();
+        calls.flash += 1;
+        const result = await withUpstreamRetry(deps, () => flash({
+          system: EPISODE_COMPILE_SYSTEM,
+          prompt: compilePrompt(state.parts, row?.title || '', {
+            material: batches[index],
+            index: index + 1,
+            total: batches.length,
+          }),
+        }));
+        if (signal?.aborted) {
+          addCalls(state.summaryCalls, calls);
+          return pause('deadline');
+        }
+        const piece = acceptCompiledArticle(result?.text);
+        if (!piece) throw new Error('统编正文不完整');
+        blocks[index] = piece;
+        state.compiledBlocks = blocks.slice();
+        persist(status);
+      }
+      const article = joinCompiledBlocks(blocks);
       if (!article) throw new Error('统编正文不完整');
+      const coverage = compileAnchorCoverage(state.parts, article);
       state.compiledArticle = article;
+      state.compileCoverage = coverage;
       state.mergeFallback = '';
       state.summaryProvider = 'flash';
       addCalls(state.summaryCalls, calls);
       state.summaryAttempts = 0;
       persist(status);
+      const missed = coverage.missing.length ? `，未写入 ${coverage.missing.slice(0, 8).join('、')}` : '';
+      console.info(`[worker] youtube-podcasts 事点统编 ${batches.length} 批，锚点 ${coverage.present}/${coverage.anchors}${missed}`);
       return null;
     } catch (error) {
       addCalls(state.summaryCalls, calls);
       if (signal?.aborted || deps.signal?.aborted) return pause('deadline');
+      clearCompiledDraft(state);
     }
   }
   try {
@@ -823,7 +864,7 @@ async function compilePointsOrFallback({ state, deps, signal, day, row, status, 
     ));
     if (signal?.aborted) return pause('deadline');
     state.chapters = result.chapters;
-    state.compiledArticle = '';
+    clearCompiledDraft(state);
     state.mergeFallback = MERGE_CHAPTER_CONCAT;
     state.summaryProvider = result.provider;
     addCalls(state.summaryCalls, result.calls);
@@ -929,6 +970,8 @@ async function organizeWithGemma({ row, repository, feedRepository, workspaceId,
     summary: reusable && !repairing && !useParallel ? String(saved.summary || '') : '',
     chapters: freshParallel || !Array.isArray(saved?.chapters) ? [] : saved.chapters,
     compiledArticle: freshParallel ? '' : String(saved?.compiledArticle || ''),
+    compiledBlocks: freshParallel || !Array.isArray(saved?.compiledBlocks) ? [] : saved.compiledBlocks.map((item) => String(item || '')),
+    compileBatchKey: freshParallel ? '' : String(saved?.compileBatchKey || ''),
     mergeStrategy: useParallel ? mergeRequest.plan.id : String(saved?.mergeStrategy || ''),
     mergeRequested: useParallel && mergeRequest.pending ? mergeRequest.requested : '',
     mergeFallback: freshParallel ? '' : String(saved?.mergeFallback || ''),
