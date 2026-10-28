@@ -130,6 +130,12 @@ export function createReportRoutes({ slots = createPreparedSlotStore(), offthrea
       const digest=services.report.getHourlySnapshotDigest('local',input.snapshotId);
       json(response,digest ? 200 : 404,{ok:Boolean(digest),digest});
     }},
+    {method:'GET',path:'/api/v1/reports/hourly-category',handler({response,services,url,identity}) {
+      const input=parseContract(HourlyDigestQuerySchema,{hourStart:Number(url.searchParams.get('hourStart') ?? NaN)});
+      const workspace=identity?.device?.workspaceId || 'local';
+      const view=services.hourlyCategory?.get?.(workspace, input.hourStart) || {enabled:false, edition:null};
+      json(response,200,{ok:true,...view});
+    }},
     {method:'GET',path:'/api/v1/reports/hourly',handler({response,services,url}) {
       const input=parseContract(HourlyDigestQuerySchema,{hourStart:Number(url.searchParams.get('hourStart') ?? NaN)});
       json(response,200,{ok:true,digest:services.report.getHourlyDigest('local',input.hourStart)});

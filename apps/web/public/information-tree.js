@@ -6,6 +6,7 @@ import { mountInvestorDigest } from './investor-digest.js?v=dev';
 import { shareTextBlocks, stripSharePlaceholders } from './share-card.js?v=dev';
 import { inclusiveWindowInstant, zonedCalendarParts, zonedClockParts } from './shanghai-time.js?v=dev';
 import { createListSkeleton, paintListSkeleton } from './list-skeleton.js?v=dev';
+import { paintHourlyCategory } from './hourly-category-view.js?v=dev';
 
 // 贴在标题栏下面的行不算可见。行的顶要落到 coverBottom 上或更下面，只露出一截底边的高行也不算。
 export function briefVisibleAnchor(rows, coverBottom = 0) {
@@ -1489,18 +1490,31 @@ export function createInformationTreePage(host) {
       }
     }
     if(!away && shownKey===positionKeyForHour(edition.window.startAt)) rememberPosition();
+    attachHourlyCategory(page, edition, token);
     list.replaceChildren(page);
     root.dataset.readingSnapshot=snapshot.id||'';
     showPosition(positionKeyForHour(edition.window.startAt), false);
     consumePendingNode();
     prefetchAround(edition);
   }
-  function paintEmptyHour(edition, claim) {
+  function attachHourlyCategory(page, edition, token) {
+    if (typeof host.hourlyCategory !== 'function' || host.hourlyCategory() !== true) return;
+    const slot=el('section','','hourly-category');
+    page.prepend(slot);
+    const start=edition?.window?.startAt;
+    if (!Number.isFinite(start)) return;
+    api(`/api/v1/reports/hourly-category?hourStart=${start}`).then((data) => {
+      if (token !== epoch || !slot.isConnected) return;
+      paintHourlyCategory(slot, data?.enabled ? data.edition : null);
+    }).catch((error) => { if (!aborted(error)) slot.replaceChildren(); });
+  }
+  function paintEmptyHour(edition, claim, token=epoch) {
     clearHourSlow();finishOpening(claim,true);paintHourUnread();
     const page=el('div','','reading-hour');
     if(hourFallbackText) page.append(el('p',hourFallbackText,'tree-hour-fallback'));
     syncHourMeta(null);
     page.append(showEmptyHour());
+    attachHourlyCategory(page, edition, token);
     list.replaceChildren(page);
     showPosition(positionKeyForHour(edition.window.startAt), false);
     prefetchAround(edition);
@@ -1527,7 +1541,7 @@ export function createInformationTreePage(host) {
     const key=edition.window.startAt;
     if(readingCache.has(key)){
       const snapshot=readingCache.get(key);
-      if(!snapshot) return paintEmptyHour(edition, claim);
+      if(!snapshot) return paintEmptyHour(edition, claim, token);
       await renderReadingHour(token,claim,edition,snapshot);
       if(snapshot.status==='partial') refreshPartial(edition, token, claim);
       return;
@@ -1537,7 +1551,7 @@ export function createInformationTreePage(host) {
     const snapshot=await readingHourPromise(edition);
     if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
     clearHourSlow();
-    if(!snapshot) return paintEmptyHour(edition, claim);
+    if(!snapshot) return paintEmptyHour(edition, claim, token);
     await renderReadingHour(token,claim,edition,snapshot);
     if(snapshot.status==='partial') refreshPartial(edition, token, claim);
   }

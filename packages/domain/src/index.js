@@ -27,6 +27,7 @@ import { createNorthboundReadService } from './northbound-service.js';
 import { createYoutubePodcastService } from './youtube-podcasts-service.js';
 import { createXVideoService } from './x-video-service.js';
 import { createXLinkService } from './x-link-service.js';
+import { createHourlyCategoryService, hourlyCategoryEnabled } from './hourly-category.js';
 
 export { createContextService, createDailyBriefService, createFeedService, createIdentityService, createKnowledgeService, createMarketStatisticsService, createMediaIngestionService, createReportService, createRuntimeService, createTradingService, createTaggingService };
 export { buildDailyBriefCandidates } from './daily-brief-candidates.js';
@@ -167,6 +168,13 @@ export function createDomainServices({
   });
   return Object.freeze({
     informationTree: createInformationTreeReader({repository:store.repositories.informationTree,timezone:resolvedDailyConfig.timezone,pipeline:informationPipeline,catalog:tagCatalog || {}}),
+    hourlyCategory: store.repositories.hourlyCategory
+      ? createHourlyCategoryService({
+        repository: store.repositories.hourlyCategory,
+        catalog: tagCatalog?.tags ? tagCatalog : { tags: [] },
+        enabled: hourlyCategoryEnabled(env),
+      })
+      : null,
     readingHour: createReadingHourService({
       repository:store.repositories.informationTree,
       enabled: env.AI_CENTER_READING_HOUR === '1',

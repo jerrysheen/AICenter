@@ -13661,7 +13661,7 @@ function ensureBriefPage() {
   if (!ensureBriefPage.promise) {
     ensureBriefPage.promise = import('./brief-page.js?v=dev').then((mod) => {
       briefPage.impl = mod.createBriefPage ? mod.createBriefPage({
-  api, navigate: setView, session: () => state.session, active: () => document.body.dataset.view === 'report',
+  api, navigate: setView, session: () => state.session, hourlyCategory: () => state.session?.hourlyCategory === true, active: () => document.body.dataset.view === 'report',
   syncHour(hour, extra = {}) {
     const nextHour = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
     const nextNode = extra && Object.hasOwn(extra, 'node') ? (extra.node || '') : reportNode;

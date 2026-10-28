@@ -12,6 +12,8 @@ tree-v3.1审核修复：注册固定report.information.prepare任务，在采集
 
 2026-10-05 用户授权按内容类型分流 TrendForce：原采集任务一次获取，经 Feed 注入 Port 分别写 Media 与行情报价 Service/Repository；硬件报价独立于股票 OHLC。来源和旧 ContentItem 身份保留，迁移显式执行；细则见 `hardware-prices-v1.md`。
 
+2026-10-28 分类小时报是信息树小时刊期旁边的另一份存储，不替换 `generateHour`，也不关闭 `article-normalize` 或阅读分类。桶来自 `resource_taggings` 与 `config/tags.json` 的交集，经现有 `groupByTag`。每个非空桶一次封闭任务 `hourly-category-brief`，走与 `hourly-brief` 相同的小时模型路由。刊期在 migration 97 的 `hourly_category_editions`，`formatVersion=hourly-category-v1`。只有 `AI_CENTER_HOURLY_CATEGORY` 打开时，`report.hourly.extract` 才顺带写入；读取接口不返回模型名。见 `progress/2026-10-28-hourly-category.md`。
+
 当前产品版本是 **0.2.0 基线候选**。当前问题与验收见 `docs/release-readiness.md`。
 下文「第一版兼容层」是仍在运行的连接闭环，不是当前工作范围。
 

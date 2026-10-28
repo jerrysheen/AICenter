@@ -1,5 +1,6 @@
 import { parseBehaviorEvents, parseLoginInput, parsePairInput } from '../../../../packages/contracts/src/index.js';
 import { authorViewEnabled } from '../../../../packages/domain/src/authors.js';
+import { hourlyCategoryEnabled } from '../../../../packages/domain/src/hourly-category.js';
 import { json, readJson } from '../http/response.js';
 
 export function createIdentityRoutes() {
@@ -72,6 +73,7 @@ export function createIdentityRoutes() {
           serverName: appInfo.serverName,
           version: appInfo.version,
           authorView: authorViewEnabled(),
+          hourlyCategory: hourlyCategoryEnabled(),
         });
       },
     },

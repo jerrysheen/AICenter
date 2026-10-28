@@ -24,6 +24,7 @@ import {
 import { buildHarnessFollowUpPrompt, buildHarnessPrompt } from './prompt.js';
 import {
   harnessLlmCredentialError,
+  isHourlyHarnessTask,
   materializeHarnessSettings,
   missingHarnessLlmCredential,
   resolveHarnessLlm,
@@ -450,7 +451,7 @@ export function createHarnessAgentRuntime({
 
   async function runWithFallback(input) {
     try {return await runOnce(input);}catch(error) {
-      if(input.closedContext===true && input.closedTask==='hourly-brief' && hourlyUsesGemmaFallback(error) && hourlyGemmaFallback) {
+      if(input.closedContext===true && isHourlyHarnessTask(input.closedTask) && hourlyUsesGemmaFallback(error) && hourlyGemmaFallback) {
         await input.trace?.({event:'hourly.provider.fallback',detail:{from:'flash-lite',to:'gemma-26b',reason:'quota-exhausted'}});
         try { return await hourlyGemmaFallback(input); }
         catch (gemmaError) {
@@ -480,13 +481,13 @@ export function createHarnessAgentRuntime({
     allowedToolIds: runAllow, timeoutMs, trace, now, closedContext = false, closedTask = '', usageStage = '', googleModel, googleKeyEnv, hourlyMaxTokens,
   } = {}, articleFallback=false) {
     let runEnv=articleFallback ? {...env,AI_CENTER_HARNESS_ARTICLE_PROVIDER:'elucid-grok',AI_CENTER_HARNESS_ARTICLE_MODEL:env.AI_CENTER_HARNESS_ARTICLE_FALLBACK_MODEL || 'grok-4.7'} : env;
-    if(!articleFallback && hourlyMaxTokens && closedTask==='hourly-brief') {
+    if(!articleFallback && hourlyMaxTokens && isHourlyHarnessTask(closedTask)) {
       const tokens=Number(hourlyMaxTokens);
       if(![4096,6144,8192].includes(tokens)) throw new Error('hourly max tokens must be 4096, 6144 or 8192');
       runEnv={...runEnv,AI_CENTER_HARNESS_HOURLY_MAX_TOKENS:String(tokens)};
     }
     if(!articleFallback && (googleModel!==undefined || googleKeyEnv!==undefined)) {
-      const hourlyGoogle=closedTask==='hourly-brief' && String(env.AI_CENTER_HARNESS_HOURLY_PROVIDER || '').trim()==='google';
+      const hourlyGoogle=isHourlyHarnessTask(closedTask) && String(env.AI_CENTER_HARNESS_HOURLY_PROVIDER || '').trim()==='google';
       const articleGoogle=closedTask==='article-normalize' && String(env.AI_CENTER_HARNESS_ARTICLE_PROVIDER || '').trim()==='google';
       if(closedContext!==true || (!hourlyGoogle && !articleGoogle))throw new Error('Google selectors require a closed Google task');
       const selected=resolveHarnessLlm(env,{closedTask,googleModel});
@@ -502,7 +503,7 @@ export function createHarnessAgentRuntime({
       ? researchProfile
       : resolveResearchProfile(researchMode);
     const closed = closedContext === true;
-    const task = closed && ['media-brief','daily-analysis','hourly-brief','article-normalize'].includes(closedTask) ? closedTask : '';
+    const task = closed && ['media-brief','daily-analysis','hourly-brief','hourly-category-brief','article-normalize'].includes(closedTask) ? closedTask : '';
     let llm = resolveHarnessLlm(runEnv, { researchProfile: profile, closedTask:task });
     if (missingHarnessLlmCredential(env, llm)) {
       throw new Error(harnessLlmCredentialError(llm));
@@ -549,11 +550,12 @@ export function createHarnessAgentRuntime({
       : '';
 
     let slot, articleTicket, executionEnv=runEnv;
-    const googleAdmission=task==='hourly-brief' ? hourlyAdmission : articleAdmission;
-    if(['article-normalize','hourly-brief'].includes(task) && llm.provider==='google') {
+    const hourlyTask=isHourlyHarnessTask(task);
+    const googleAdmission=hourlyTask ? hourlyAdmission : articleAdmission;
+    if((task==='article-normalize' || hourlyTask) && llm.provider==='google') {
       if(!googleAdmission)throw new Error('Google article task requires persistent traffic admission');
       articleTicket=googleAdmission.reserve({model:llm.model,keyEnv:googleKeyEnv,useModelPool:googleModel===undefined,inputBytes:Buffer.byteLength(buildHarnessPrompt({closedContext:true,taskInstruction,message})),maxTokens:llm.execution.maxTokens});
-      const prefix=task==='hourly-brief' ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
+      const prefix=hourlyTask ? 'AI_CENTER_HARNESS_HOURLY' : 'AI_CENTER_HARNESS_ARTICLE';
       executionEnv={...runEnv,[prefix+'_KEY_ENV']:articleTicket.keyEnv,[prefix+'_MODEL']:articleTicket.model};
       llm=resolveHarnessLlm(executionEnv,{researchProfile:profile,closedTask:task});
     }
@@ -672,7 +674,7 @@ export function createHarnessAgentRuntime({
       let decision = resolveFinalAnswer({
         answer,
         evidence,
-        remainingModelCalls: task==='article-normalize' ? 0 : 1,
+        remainingModelCalls: task==='article-normalize' || task==='hourly-category-brief' ? 0 : 1,
         explicitWebSearchRequested: explicitSearchIntent(message),
         webSearchAvailable,
       });

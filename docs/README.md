@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-28-hourly-category.md`：分类小时报按 Gemma 的 `resource_taggings` 分桶，每个非空桶一次 `hourly-category-brief`。`AI_CENTER_HOURLY_CATEGORY` 默认关闭。打开后现有小时任务同时写新表 `hourly_category_editions`，信息树小时刊期、文章整理和阅读分类都保持原样。migration 97。需要同时重启 Web 和 Worker。回退是关掉这个变量后再重启。
+
 - `progress/2026-10-28-tree-gemma-tag-hints.md`：prepare 在新建或更新信息节点时，把 `resource_taggings` 里非空的目录标签写入 `tagId`。已有且仍在这份列表中的 `tagId` 保持不变。空标签不新造。不新增 migration。只需要重启 Worker。
 
 - `progress/2026-10-27-podcast-episode-hash.md`：从列表点开单集，或客户端把地址改成 `#podcast/<id>` 时，已整理但还没有正文的一集会先清空阅读区，再对 `HTMLCollection` 调用 `find`，抛错后主区域一直空白。现在按子节点集合来找正文节点。没有正文时先画出标题。宽屏目录默认收起、页头随滚动离开保持不变。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
