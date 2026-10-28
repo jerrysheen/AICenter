@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createStore} from '../packages/database/src/index.js';
 import {createInformationTreeService} from '../packages/domain/src/information-tree-service.js';
-import {hourlyCatchupBudgetMs, hourlyModelQueueTimeoutMs, treeFailure} from '../packages/domain/src/information-tree-policy.js';
+import {hourlyCatchupBudgetMs, hourlyModelQueueTimeoutMs, tagIdFromTagHints, treeFailure, validTagHintIds} from '../packages/domain/src/information-tree-policy.js';
 import {loadInformationTreeSkills} from '../packages/runtime/src/information-tree/skills.js';
 import {createInformationTreeJobHandlers,enqueueTreePreparation,TREE_PREPARE_JOB_TYPE,informationTreeManifest,enqueuePreparedHourRefreshes,prioritizeRecentTreePreparation,editionCoversMaterials} from '../packages/runtime/src/information-tree-module.js';
 import {createCapabilityRegistry} from '../packages/runtime/src/capability-registry.js';
@@ -30,6 +30,43 @@ test('prepared information immediately readable; regular hourly path never reads
     await f.service.prepareInformation({materials:[m]});assert.equal(f.service.list('local',{startAt:start,endAt:start+H}).information.length,1);
     assert.equal(f.service.list('local',{startAt:start,endAt:start+H}).hours.length,0);
     const before=f.calls.length,h=await f.service.generateHour({hourStart:start});assert.equal(h.status,'ready');assert.equal(f.calls.length,before);
+  }finally{f.store.close();}
+});
+test('tag hints keep a listed id and do not invent one from an empty Gemma list',()=>{
+  const ids=new Set(['ai','macro']);
+  assert.deepEqual(validTagHintIds(['nope','macro','ai','macro'], ids), ['macro','ai']);
+  assert.equal(tagIdFromTagHints('ai', ['macro','ai'], ids), 'ai');
+  assert.equal(tagIdFromTagHints('ai', ['macro','ai'], ids, {replace:true}), 'macro');
+  assert.equal(tagIdFromTagHints(null, ['macro'], ids), 'macro');
+  assert.equal(tagIdFromTagHints(null, [], ids), null);
+  assert.equal(tagIdFromTagHints('ai', undefined, ids), 'ai');
+  assert.equal(tagIdFromTagHints(null, ['nope'], ids), null);
+});
+test('prepare fills a null tagId from Gemma hints and does not invent or clear one',async()=>{
+  const catalog={tags:[{id:'ai',name:'AI'},{id:'macro',name:'宏观'}]};
+  let hints=[];
+  const f=fixture({catalog, tagHints:()=>hints});
+  f.runtime.run=async input=>{
+    f.calls.push(input);
+    const p=JSON.parse(input.message);
+    const tagId=String(p.source?.title || '').includes('保留') ? 'macro' : null;
+    if(input.usageStage==='tree-information') return {answer:JSON.stringify({title:p.source.title,text:p.source.paragraphs.map(row=>row.text).join(''),tagId})};
+    return {answer:JSON.stringify({modules:(p.inputs || []).map(n=>({title:n.title,text:n.text,tagId:p.tagId,inputIds:[n.id]}))})};
+  };
+  try{
+    const bare=await f.service.prepareInformation({materials:[material('bare')]});
+    assert.equal(bare.nodes[0].tagId, null);
+    hints=['nope','macro','ai'];
+    const filled=await f.service.prepareInformation({materials:[material('bare')]});
+    assert.equal(filled.nodes[0].tagId, 'macro');
+    assert.ok(['macro','ai'].includes(filled.nodes[0].tagId));
+    assert.equal(f.calls.filter(c=>c.usageStage==='tree-information').length, 1);
+    hints=[];
+    const cleared=await f.service.prepareInformation({materials:[material('bare')]});
+    assert.equal(cleared.nodes[0].tagId, 'macro');
+    hints=['ai','macro'];
+    const kept=await f.service.prepareInformation({materials:[material('keep','保留宏观标签的正文。')]});
+    assert.equal(kept.nodes[0].tagId, 'macro');
   }finally{f.store.close();}
 });
 test('empty legacy tags do not erase valid model classification; parent-child groups deduplicate and null stays separate',async()=>{

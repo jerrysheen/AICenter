@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-28-tree-gemma-tag-hints.md`：prepare 在新建或更新信息节点时，把 `resource_taggings` 里非空的目录标签写入 `tagId`。已有且仍在这份列表中的 `tagId` 保持不变。空标签不新造。不新增 migration。只需要重启 Worker。
+
 - `progress/2026-10-27-podcast-episode-hash.md`：从列表点开单集，或客户端把地址改成 `#podcast/<id>` 时，已整理但还没有正文的一集会先清空阅读区，再对 `HTMLCollection` 调用 `find`，抛错后主区域一直空白。现在按子节点集合来找正文节点。没有正文时先画出标题。宽屏目录默认收起、页头随滚动离开保持不变。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
 
 - `progress/2026-10-27-podcast-reader-open.md`：从别的页面进入播客列表或单集时，首屏类不再挡住面板，正文未到就把滚动拉回顶部，并接上被文章页占用的同一次请求。宽屏目录默认收起，页头随滚动离开，上滚才露出短条。列表少查进行中的任务。页面读单集时不带字幕原文，已整理的行不再展开大段状态。长文先画页头再排正文。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。

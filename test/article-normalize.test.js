@@ -207,3 +207,68 @@ test('saved Gemma tags replace the article model tag on the information node', a
     f.store.close();
   }
 });
+
+test('prepare writes Gemma tag hints onto a null tagId and does not invent one', async () => {
+  const catalog = { tags: [{ id: 'ai', name: '人工智能' }, { id: 'macro', name: '宏观' }] };
+  let hints = ['not-a-tag', 'ai', 'macro'];
+  const f = fixture(() => ({ ...output, tagId: 'macro' }), { catalog, tagHints: () => hints });
+  try {
+    const created = await f.service.prepareInformation({ materials: [source()] });
+    assert.equal(created.nodes[0].tagId, 'ai');
+    assert.ok(['ai', 'macro'].includes(created.nodes[0].tagId));
+    hints = ['macro', 'ai'];
+    const kept = await f.service.prepareInformation({ materials: [source()] });
+    assert.equal(f.calls.length, 1);
+    assert.equal(kept.nodes[0].tagId, 'ai');
+    assert.equal(kept.nodes[0].body, created.nodes[0].body);
+    hints = [];
+    const empty = await f.service.prepareInformation({ materials: [source()] });
+    assert.equal(empty.nodes[0].tagId, 'ai');
+    assert.equal(f.calls.length, 1);
+  } finally {
+    f.store.close();
+  }
+
+  let missing;
+  const backfill = fixture(() => ({ ...output, tagId: null }), { catalog, tagHints: () => missing });
+  try {
+    const bare = await backfill.service.prepareInformation({ materials: [source()] });
+    assert.equal(bare.nodes[0].tagId, null);
+    missing = ['nope'];
+    const unknown = await backfill.service.prepareInformation({ materials: [source()] });
+    assert.equal(unknown.nodes[0].tagId, null);
+    assert.equal(backfill.calls.length, 1);
+    missing = ['macro', 'ai'];
+    const filled = await backfill.service.prepareInformation({ materials: [source()] });
+    assert.equal(filled.nodes[0].tagId, 'macro');
+    assert.equal(backfill.calls.length, 1);
+    assert.equal(filled.nodes[0].body, bare.nodes[0].body);
+  } finally {
+    backfill.store.close();
+  }
+
+  const locked = fixture(() => ({ ...output, tagId: null }), {
+    catalog,
+    tagHints: () => ['ai'],
+    primaryTag: () => ({ locked: true, tagId: 'macro' }),
+  });
+  try {
+    const row = await locked.service.prepareInformation({ materials: [source()] });
+    assert.equal(row.nodes[0].tagId, 'macro');
+    assert.equal(row.nodes[0].classification.source, 'manual-lock');
+  } finally {
+    locked.store.close();
+  }
+
+  const invalidLock = fixture(() => ({ ...output, tagId: null }), {
+    catalog,
+    tagHints: () => ['ai'],
+    primaryTag: () => ({ locked: true, tagId: 'missing' }),
+  });
+  try {
+    const row = await invalidLock.service.prepareInformation({ materials: [source()] });
+    assert.equal(row.nodes[0].tagId, null);
+  } finally {
+    invalidLock.store.close();
+  }
+});
