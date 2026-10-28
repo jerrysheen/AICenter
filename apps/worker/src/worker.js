@@ -84,7 +84,7 @@ import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePrep
 import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
 import {createHourlyCategoryService, hourlyCategoryEnabled} from '../../../packages/domain/src/hourly-category.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyNoCatchup, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
@@ -254,6 +254,8 @@ export function createAiCenterWorker(options = {}) {
   if (hourlyReportDisabled(env)) {
     const cancelled = releaseOpenHourlyJobs(store, env);
     console.log(`[worker] 小时报已停用（AI_CENTER_HOURLY_DISABLED=1），已取消 ${cancelled} 个未完成任务`);
+  } else if (hourlyNoCatchup(env)) {
+    console.log('[worker] 小时失败补跑已停。report.hourly.default 仍按整点运行。恢复补跑：AI_CENTER_HOURLY_NO_CATCHUP=0 后重启 Worker');
   }
   startupStep('hourly-jobs');
   store.abandonRunningJobs?.([MEDIA_ENRICH_JOB_TYPE], 'Worker 已重启，未完成的正文任务需按保存状态继续');

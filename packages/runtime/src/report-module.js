@@ -74,6 +74,26 @@ export function hourlyReportDisabled(env = process.env) {
   return String(env?.AI_CENTER_HOURLY_DISABLED ?? '') === '1';
 }
 
+// Failure catch-up is off unless explicitly restored.
+// Unset, empty, or any value other than 0 keeps the guard on.
+// AI_CENTER_HOURLY_NO_CATCHUP=0 turns the guard off.
+export function hourlyNoCatchup(env = process.env) {
+  return String(env?.AI_CENTER_HOURLY_NO_CATCHUP ?? '').trim() !== '0';
+}
+
+export function hourlyRetryableFailure(digest) {
+  return digest?.status === 'failed' && digest.terminal !== true && (digest.groupFailures || []).some((item) => item?.retryable === true);
+}
+
+// A retryable failed hour must not also enqueue a reading-class follow-up.
+// That follow-up is another extract and calls the model again. The one-shot
+// follow-up for a non-failed hour stays. Sweep of other hours stays.
+export function hourlyCatchupFollowUpBlocked(env, digests, plan) {
+  if (!hourlyNoCatchup(env) || !plan) return false;
+  const digest = (digests || []).find((item) => item?.window?.startAt === plan.hourStart);
+  return hourlyRetryableFailure(digest);
+}
+
 const HOUR_MS = 3600000;
 const HOURLY_FOLLOW_UP_DELAY_MS = 60_000;
 const DEFERRED_CLASSIFICATION = new Set(['classification-failed', 'budget-deferred']);
@@ -353,6 +373,7 @@ export function hourlyReadingFlushRemainder(digest) {
 const HOURLY_SCHEDULE_JOB_TYPES = new Set([REPORT_HOURLY_JOB_TYPE, HOURLY_FAILURE_CATCHUP_JOB_TYPE]);
 
 export function allowHourlyScheduleEnqueue(schedule, env = process.env) {
+  if (schedule?.jobType === HOURLY_FAILURE_CATCHUP_JOB_TYPE && hourlyNoCatchup(env)) return false;
   return !(HOURLY_SCHEDULE_JOB_TYPES.has(schedule?.jobType) && hourlyReportDisabled(env));
 }
 
@@ -400,6 +421,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
   return {
     [HOURLY_FAILURE_CATCHUP_JOB_TYPE]: async (_raw, context) => {
       if (hourlyReportDisabled(env)) return {status:'skipped', reason:'hourly-disabled'};
+      if (hourlyNoCatchup(env)) return {status:'skipped', reason:'no-catchup', enqueued:0, hours:[]};
       const service = treeService || informationService;
       const jobs = enqueueDueFailedHourRefreshes(context?.store, service, 'local', Date.now(), {env});
       if (jobs.length) console.log(`[worker] hourly-failure-catchup enqueued=${jobs.length} hours=${jobs.map((job) => job.input?.hourStart).join(',')}`);
@@ -453,7 +475,7 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         categoryStatus: categoryEditions.map((item) => item.status),
       } : {};
       const followUpPlan=hourlyFollowUpPlan({requestedHour:input.hourStart,digests,deferredByStart,followUp:input.followUp});
-      if(followUpPlan) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
+      if(followUpPlan && !hourlyCatchupFollowUpBlocked(env, digests, followUpPlan)) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
       let prepStats={enqueued:0,prioritized:0,queued:0,running:0,missing:0};
       try {
         prepStats=enqueueHourlyPendingPreparation(context?.store,{workspaceId,digests,followUp:input.followUp});
@@ -601,13 +623,14 @@ export function ensureHourlyFailureCatchupSchedule(store, now = Date.now(), {env
   if (hourlyReportDisabled(env)) return store.getJobSchedule?.('local', HOURLY_FAILURE_CATCHUP_KEY) || null;
   const minutes = hourlyFailureCatchupMinutes(env);
   const prior = store.getJobSchedule?.('local', HOURLY_FAILURE_CATCHUP_KEY);
+  const enabled = !hourlyNoCatchup(env);
   const sameInterval = prior?.schedule?.kind === 'interval' && prior.schedule.intervalMinutes === minutes;
   return store.upsertJobSchedule({
     resetNextRunAt: !sameInterval,
     workspaceId: 'local',
     key: HOURLY_FAILURE_CATCHUP_KEY,
     jobType: HOURLY_FAILURE_CATCHUP_JOB_TYPE,
-    enabled: true,
+    enabled,
     schedule: {kind: 'interval', intervalMinutes: minutes},
     input: {},
     priority: 0,
