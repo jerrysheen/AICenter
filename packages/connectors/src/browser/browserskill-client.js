@@ -28,11 +28,13 @@ function resolveBskPath(options = {}) {
   return resolved;
 }
 
-function commandEnv(options = {}) {
+// Business CLI calls must not spawn a daemon. Explicit `daemon start` lives in
+// bsk-daemon.js. options.env cannot turn this back on.
+export function bskCliEnv(options = {}) {
   return {
     ...process.env,
-    BSK_AUTO_START: '0',
     ...(options.env || {}),
+    BSK_AUTO_START: '0',
   };
 }
 
@@ -116,7 +118,7 @@ export function runBrowserProcess(file, args, options = {}) {
         shell: false,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: commandEnv(options),
+        env: bskCliEnv(options),
       });
     } catch (error) {
       reject(error);
@@ -236,6 +238,7 @@ export function createBrowserSkillClient(options = {}) {
 
   return {
     id: 'bsk',
+    status,
 
     async health() {
       try {

@@ -283,8 +283,10 @@ export function createAiCenterWorker(options = {}) {
     ? createOptionalSearchPort(options.webSearchPort)
     : null;
   const browserRuntime = options.browserRuntime || createConfiguredBrowserRuntime({
-    env: options.env || process.env,
+    env,
     defaultBrowserId: instance.browserId,
+    repositoryRoot,
+    superviseDaemon: options.superviseDaemon === true,
   });
   let feedService;
   const xFocusHooks = { scoreCards: null, afterIngest: null, onScoreWritten: null, recordLike: null, recordNotInterested: null };
@@ -1033,6 +1035,7 @@ export function createAiCenterWorker(options = {}) {
   let translationGapRunning = false;
   let translationGapCursor = null;
   let hardwarePriceTimer = null;
+  let stopBskDaemonWatch = null;
   let hardwarePriceEventId = 0;
   const hardwarePriceRefresh = options.enableDefaultSchedules !== false;
   const mainThreadWatchdog = startMainThreadWatchdog({
@@ -1168,6 +1171,9 @@ export function createAiCenterWorker(options = {}) {
           });
         });
       }
+      if (!stopBskDaemonWatch && typeof browserRuntime.startDaemonWatch === 'function') {
+        stopBskDaemonWatch = browserRuntime.startDaemonWatch() || null;
+      }
       if (hardwarePriceRefresh && !hardwarePriceTimer) {
         hardwarePriceEventId = store.latestEventId?.() ?? 0;
         hardwarePriceTimer = setInterval(() => {
@@ -1188,6 +1194,10 @@ export function createAiCenterWorker(options = {}) {
       if (closing) return closing;
       closing = (async () => {
         closed = true;
+        if (stopBskDaemonWatch) {
+          stopBskDaemonWatch();
+          stopBskDaemonWatch = null;
+        }
         mainThreadWatchdog.stop();
         if (translationGapTimer) clearInterval(translationGapTimer);
         translationGapTimer = null;
@@ -1220,7 +1230,9 @@ async function main() {
   const instance = resolveInstanceConfig({ repositoryRoot });
   attachDailyProcessLog({directory: process.env.AI_CENTER_LOG_DIR || path.join(instance.dataDirectory, 'logs'), name: process.env.AI_CENTER_LOG_NAME || 'worker'});
   installWorkerLogStamps();
-  const worker = createAiCenterWorker();
+  const worker = createAiCenterWorker({
+    superviseDaemon: process.platform === 'win32',
+  });
   console.log(`AI Center worker ${worker.runner.workerId}`);
   const healthStarted = Date.now();
   try {

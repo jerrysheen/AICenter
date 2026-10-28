@@ -572,6 +572,11 @@ public static class AiCenterConsoleCtrl {
     Write-Host ''
     Write-Host 'Keep this window open. Ctrl+C stops services; Enter starts them again in this folder.' -ForegroundColor DarkGray
     while (-not [AiCenterConsoleCtrl]::StopRequested) {
+      try {
+        Update-AiCenterBrowserDaemonIfDue
+      } catch {
+        Write-Host "[!] Browser daemon check failed: $($_.Exception.Message)" -ForegroundColor Yellow
+      }
       if ($script:deployInProgress) {
         Start-Sleep -Milliseconds 800
         continue
@@ -636,13 +641,6 @@ public static class AiCenterConsoleCtrl {
       if ($searchProcess) {
         $searchProcess.Refresh()
       }
-      if ($browserProcess) {
-        $browserProcess.Refresh()
-        if ($browserProcess.HasExited) {
-          Write-Host "[!] Browser host service exited. Web and Worker will keep running; see $BrowserErrorLog" -ForegroundColor Yellow
-          $browserProcess = $null
-        }
-      }
       if ($cloudflareProcess) {
         $cloudflareProcess.Refresh()
         if ($cloudflareProcess.HasExited) {
@@ -666,6 +664,65 @@ public static class AiCenterConsoleCtrl {
     if ($registered) {
       [void][AiCenterConsoleCtrl]::SetConsoleCtrlHandler([AiCenterConsoleCtrl]::Handler, $false)
     }
+  }
+}
+
+function Update-AiCenterBrowserDaemonIfDue {
+  if ($script:browserDaemonProcess) {
+    try { $script:browserDaemonProcess.Refresh() } catch { }
+    if ($script:browserDaemonProcess.HasExited) {
+      Write-Host "[!] Browser daemon exited. Web and Worker keep running. See $BrowserErrorLog" -ForegroundColor Yellow
+      $script:browserDaemonProcess = $null
+      $script:browserDaemonNextCheckUtc = [DateTime]::UtcNow
+    }
+  }
+  if ($script:browserDaemonNextCheckUtc -and [DateTime]::UtcNow -lt $script:browserDaemonNextCheckUtc) { return }
+  Update-AiCenterBrowserDaemon
+}
+
+function Update-AiCenterBrowserDaemon {
+  $seconds = if ($script:bskDaemonCheckSeconds -ge 5) { [int]$script:bskDaemonCheckSeconds } else { 15 }
+  $script:browserDaemonNextCheckUtc = [DateTime]::UtcNow.AddSeconds($seconds)
+  if (-not $script:bskDaemonWatchEnabled) { return }
+  $status = $null
+  try { $status = Get-AiCenterBrowserStatus } catch { $status = $null }
+  $running = $false
+  if (-not (Test-AiCenterBrowserDaemonUp $status)) {
+    try { $running = @(Get-AiCenterBrowserProcesses).Count -gt 0 } catch { $running = $false }
+  }
+  $decision = Get-AiCenterBrowserDaemonAction `
+    -Status $status `
+    -DaemonProcessRunning $running `
+    -StartInFlight ([bool]$script:browserDaemonStartInFlight) `
+    -LastStartUtc $script:browserDaemonLastStartUtc `
+    -NowUtc ([DateTime]::UtcNow) `
+    -WatchEnabled $true
+  if ($decision.Action -ne 'start') { return }
+  $lockPath = Join-Path $HostRuntimeDirectory 'bsk-daemon.lock'
+  if (-not (Enter-AiCenterBskDaemonStartLock -Path $lockPath)) { return }
+  $script:browserDaemonStartInFlight = $true
+  try {
+    $again = $null
+    try { $again = Get-AiCenterBrowserStatus } catch { $again = $null }
+    $stillRunning = $false
+    try { $stillRunning = @(Get-AiCenterBrowserProcesses).Count -gt 0 } catch { $stillRunning = $false }
+    $still = Get-AiCenterBrowserDaemonAction -Status $again -DaemonProcessRunning $stillRunning -StartInFlight $false -LastStartUtc ([datetime]::MinValue) -NowUtc ([DateTime]::UtcNow)
+    if ($still.Action -ne 'start') { return }
+    $script:browserDaemonLastStartUtc = [DateTime]::UtcNow
+    $script:browserDaemonProcess = Start-AiCenterBrowserDaemon -OutLog $BrowserOutLog -ErrorLog $BrowserErrorLog
+    $ready = Wait-AiCenterBrowserDaemon
+    if (-not $ready) {
+      Write-Host "[!] Browser daemon restart did not become ready. See $BrowserErrorLog" -ForegroundColor Yellow
+    } else {
+      $browserCount = 0
+      if ($ready.browsers) { $browserCount = @($ready.browsers).Count }
+      Write-Host "[bsk-daemon] restarted pid=$($ready.pid) browsers=$browserCount" -ForegroundColor Cyan
+    }
+  } catch {
+    Write-Host "[!] Browser daemon restart failed: $($_.Exception.Message)" -ForegroundColor Yellow
+  } finally {
+    $script:browserDaemonStartInFlight = $false
+    Exit-AiCenterBskDaemonStartLock -Path $lockPath
   }
 }
 
@@ -755,6 +812,12 @@ while ($true) {
   $searchProcess = $null
   $browserProcess = $null
   $cloudflareProcess = $null
+  $script:browserDaemonProcess = $null
+  $script:browserDaemonStartInFlight = $false
+  $script:browserDaemonLastStartUtc = [datetime]::MinValue
+  $script:browserDaemonNextCheckUtc = [DateTime]::UtcNow.AddDays(1)
+  $script:bskDaemonWatchEnabled = $true
+  $script:bskDaemonCheckSeconds = 15
   $searchStatus = 'skipped'
   $browserStatus = 'skipped'
   $cloudflareStatus = 'skipped'
@@ -809,13 +872,33 @@ while ($true) {
     } catch {
       Write-Host "[!] Scrape browser config: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+    try {
+      $bskWatchProcess = @{}
+      foreach ($bskWatchName in @('AI_CENTER_BSK_DAEMON_WATCH', 'AI_CENTER_BSK_DAEMON_CHECK_SECONDS')) {
+        $bskWatchValue = [Environment]::GetEnvironmentVariable($bskWatchName, 'Process')
+        if ($bskWatchValue) { $bskWatchProcess[$bskWatchName] = $bskWatchValue }
+      }
+      $bskWatch = Get-AiCenterBskDaemonWatchSettings `
+        -ProcessEnvironment $bskWatchProcess `
+        -InstanceEnvironment (Read-AiCenterBskDaemonEnvFile $InstanceEnvPath) `
+        -RepositoryEnvironment (Read-AiCenterBskDaemonEnvFile $RepositoryEnvPath)
+      $script:bskDaemonWatchEnabled = [bool]$bskWatch.Enabled
+      $script:bskDaemonCheckSeconds = [int]$bskWatch.CheckSeconds
+    } catch {
+      Write-Host "[!] Browser daemon watch config: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    if (-not $script:bskDaemonWatchEnabled) {
+      Write-Host '[!] Browser daemon watch is off (AI_CENTER_BSK_DAEMON_WATCH=0). A dead daemon stays down until something else starts it.' -ForegroundColor Yellow
+    }
     $existingBrowser = Get-AiCenterBrowserStatus
     if ($existingBrowser -and $existingBrowser.pid) {
       $browserStatus = 'reused'
       Write-Host "[OK] Browser daemon already running PID $($existingBrowser.pid)" -ForegroundColor DarkGray
     } else {
       try {
+        $script:browserDaemonLastStartUtc = [DateTime]::UtcNow
         $browserProcess = Start-AiCenterBrowserDaemon -OutLog $BrowserOutLog -ErrorLog $BrowserErrorLog
+        $script:browserDaemonProcess = $browserProcess
         $browserOwned = $true
         $ready = Wait-AiCenterBrowserDaemon
         if (-not $ready) {
@@ -829,6 +912,7 @@ while ($true) {
         Write-Host "[!] Browser daemon failed to start: $($_.Exception.Message)" -ForegroundColor Yellow
       }
     }
+    $script:browserDaemonNextCheckUtc = [DateTime]::UtcNow.AddSeconds([int]$script:bskDaemonCheckSeconds)
     try {
       Update-AiCenterScrapeBrowser -Startup $true
     } catch {
