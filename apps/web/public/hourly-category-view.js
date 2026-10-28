@@ -5,19 +5,60 @@ const node = (tag, className = '', text = '') => {
   return element;
 };
 
+const CHROME = new Set(['tree-hour-fallback', 'news-day-label']);
+
+function hasClass(element, name) {
+  return String(element?.className || '').split(/\s+/).includes(name);
+}
+
+function childList(element) {
+  return [...(element?.children || [])];
+}
+
+export function layoutHourlyDual(page, { enabled = false } = {}) {
+  if (!enabled || !page) return { page, categorySlot: null };
+  const children = childList(page);
+  const existing = children.find((child) => hasClass(child, 'hourly-dual'));
+  if (existing) {
+    const categoryPane = childList(existing).find((child) => hasClass(child, 'hourly-dual-category'));
+    const categorySlot = childList(categoryPane).find((child) => hasClass(child, 'hourly-category')) || null;
+    return { page, categorySlot };
+  }
+  const chrome = [];
+  const body = [];
+  for (const child of children) {
+    if ([...CHROME].some((name) => hasClass(child, name))) chrome.push(child);
+    else body.push(child);
+  }
+  const dual = node('div', 'hourly-dual');
+  const tree = node('section', 'hourly-dual-pane hourly-dual-tree');
+  tree.append(node('h2', 'hourly-dual-label', '信息树小时'));
+  const treeBody = node('div', 'hourly-dual-body');
+  body.forEach((child) => treeBody.append(child));
+  tree.append(treeBody);
+  const categoryPane = node('section', 'hourly-dual-pane hourly-dual-category');
+  categoryPane.append(node('h2', 'hourly-dual-label', '类目小时'));
+  const categorySlot = node('div', 'hourly-category');
+  categoryPane.append(categorySlot);
+  dual.append(tree, categoryPane);
+  page.replaceChildren(...chrome, dual);
+  paintHourlyCategory(categorySlot, null);
+  return { page, categorySlot };
+}
+
 export function paintHourlyCategory(slot, edition) {
   slot.replaceChildren();
   slot.className = 'hourly-category';
+  slot.hidden = false;
   if (!edition) {
     slot.append(node('p', 'tree-hour-empty', '分类小时报尚未生成'));
     return slot;
   }
   const categories = (edition.categories || []).filter((category) => category && (category.inputCount || category.events?.length));
   if (!categories.length) {
-    slot.hidden = true;
+    slot.append(node('p', 'tree-hour-empty', '这一小时没有分类条目'));
     return slot;
   }
-  slot.hidden = false;
   for (const category of categories) {
     const block = node('section', 'reading-block hourly-category-block');
     const heading = node('h2', 'reading-direction news-section-title', category.label || category.id || '');

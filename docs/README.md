@@ -27,7 +27,7 @@
 
 - `progress/2026-10-28-hourly-no-catchup.md`：`report.hourly.failure-catchup` 默认不再启用。未设置 `AI_CENTER_HOURLY_NO_CATCHUP` 时，失败小时不再重新入队打模型；`report.hourly.default` 整点任务、分类小时报、阅读分类和文章整理保持原样。设为 `0` 后重启 Worker 可恢复补跑。不新增 migration。只需要重启 Worker。
 
-- `progress/2026-10-28-hourly-category.md`：分类小时报按 Gemma 的 `resource_taggings` 分桶，每个非空桶一次 `hourly-category-brief`。`AI_CENTER_HOURLY_CATEGORY` 默认关闭。打开后现有小时任务同时写新表 `hourly_category_editions`，信息树小时刊期、文章整理和阅读分类都保持原样。migration 97。需要同时重启 Web 和 Worker。回退是关掉这个变量后再重启。
+- `progress/2026-10-28-hourly-category.md`：分类小时报按 Gemma 的 `resource_taggings` 分桶，每个非空桶一次 `hourly-category-brief`。`AI_CENTER_HOURLY_CATEGORY` 默认关闭。打开后现有小时任务同时写新表 `hourly_category_editions`，信息树小时刊期、文章整理和阅读分类都保持原样。同一开关下，Worker 为已跑的分类小时打一行观察日志，小时页并排显示「信息树小时」和「类目小时」。不新增模型调用，也不新增 migration。需要同时重启 Web 和 Worker。回退是关掉这个变量后再重启。
 
 - `progress/2026-10-28-tree-gemma-tag-hints.md`：prepare 在新建或更新信息节点时，把 `resource_taggings` 里非空的目录标签写入 `tagId`。已有且仍在这份列表中的 `tagId` 保持不变。空标签不新造。不新增 migration。只需要重启 Worker。
 
