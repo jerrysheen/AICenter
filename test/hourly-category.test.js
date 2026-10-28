@@ -63,6 +63,18 @@ test('primary bucket uses the first catalog tag and groupByTag', () => {
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(ids.length, 5);
   assert.equal(buckets[0].items[0].excerpt.length <= 200, true);
+  const social = bucketCategoryItems([
+    item('feed:x1', [], { title: 'X 博主' }),
+    item('feed:xq', [], { title: '雪球博主' }),
+    item('feed:plain', []),
+    item('feed:tagged', ['macro']),
+  ].map((row, index) => ({ ...row, provider: ['x', 'xueqiu', 'rss', 'x'][index] })), catalog);
+  assert.deepEqual(social.map((bucket) => [bucket.id, bucket.label, bucket.items.map((row) => row.sourceId)]), [
+    ['macro', '宏观', ['feed:tagged']],
+    ['social_x', 'X', ['feed:x1']],
+    ['social_xueqiu', '雪球', ['feed:xq']],
+    ['__untagged__', '待标注', ['feed:plain']],
+  ]);
 });
 
 test('category brief output rejects sourceIds outside the input', () => {
@@ -91,6 +103,29 @@ test('category brief output rejects sourceIds outside the input', () => {
   assert.deepEqual(covered.events.map((event) => event.sourceIds), [['feed:1'], ['feed:2']]);
   assert.equal(covered.events[1].bullet, '第二条');
   assert.equal(covered.truncated, false);
+});
+
+test('untagged X and xueqiu blogger posts are listed without Flash', async () => {
+  const store = createStore(':memory:');
+  try {
+    let calls = 0;
+    const service = createHourlyCategoryService({
+      repository: store.repositories.hourlyCategory,
+      candidatePort: async () => [
+        { id: 'feed:x1', title: 'X 谈到订单', provider: 'x', eventAt: hour + 2 },
+        { id: 'feed:xq', title: '雪球博主谈到利率', provider: 'xueqiu', eventAt: hour + 3 },
+      ],
+      catalog,
+      agentRuntime: { async run() { calls += 1; throw new Error('social buckets must not call Flash'); } },
+      now: () => hour + HOUR + 5,
+    });
+    const edition = await service.generateHour({ workspaceId: 'local', hourStart: hour });
+    assert.equal(calls, 0);
+    assert.deepEqual(edition.categories.map((category) => [category.id, category.label]), [['social_x', 'X'], ['social_xueqiu', '雪球']]);
+    assert.deepEqual(edition.categories[0].events.map((event) => [event.bullet, event.sourceIds]), [['X 谈到订单', ['feed:x1']]]);
+    assert.deepEqual(edition.categories[1].events.map((event) => [event.bullet, event.sourceIds]), [['雪球博主谈到利率', ['feed:xq']]]);
+    assert.equal(edition.status, 'ready');
+  } finally { store.close(); }
 });
 
 test('empty closed hour writes an empty edition and does not call Flash', async () => {
@@ -261,7 +296,7 @@ test('category brief reuses the hourly Flash route and does not replace article 
   const worker = readFileSync(new URL('../apps/worker/src/worker.js', import.meta.url), 'utf8');
   assert.match(worker, /AI_CENTER_ARTICLE_NORMALIZE==='1'/);
   assert.match(worker, /AI_CENTER_READING_HOUR === '1'/);
-  assert.match(worker, /candidatePort:categoryMaterials\.categoryCandidates/);
+  assert.match(worker, /candidatePort:categoryMaterials\.candidates/);
   treeCatalog(JSON.parse(readFileSync(new URL('../config/tags.json', import.meta.url), 'utf8')));
 });
 

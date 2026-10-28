@@ -1,34 +1,36 @@
-# 小时报导航、空壳和类目密度
+# 小时报导航、空壳和类目里的 X / 雪球博主
 
 ## 目标
 
-底部「简报」打开后停在小时报，空小时不要看起来像成功刊期。类目小时报要带上雪球 7x24，并以紧凑的方向要点为主，而不是让待标注的 12 条占满版面。
+底部「简报」打开后停在小时报。空小时不要看起来像成功刊期。已经入库的 X 和雪球博主要出现在类目小时报里。雪球 7x24 继续排除。
+
+## 查过的链路
+
+2026-10-28 上海对账：07 点入库 132，去掉 YouTube 后 126，再按快讯名单去掉雪球 7x24 后还有 106。类目刊期大约 62 条，其中待标注 60，页面只画出 12 条。10 点同样是先去掉 7x24，剩下的并不少。
+
+- 快讯名单继续排除 `xueqiu:home:livenews` 和其它快讯。X、雪球关注和雪球精选不在这张名单里。
+- 收录时间窗仍是入库时刻 `created_at`。这一小时已经入库的帖会进入候选。`published_at` 落在本小时、入库落在下一小时的，仍归到入库那一小时。
+- 质量上已经标成 DROP 或 REVIEW 的帖，列表本身就不算可见，小时候选同样不收。
+- 没有目录标签的 X 和雪球博主以前全部进 `__untagged__`。模型最多写 12 条，页面再把待标注折起，所以小时报看起来只剩几条。
 
 ## 决定
 
-- `#report` 没有 `hour`、也没有 `mode=daily` 时，简报按小时报打开，并尽量把当前上海小时写进 `#report?hour=`。点「日报」写成 `?mode=daily`，点「股民讨论」写成 `?mode=discussion`。带日期且没有小时的地址仍是日报。
-- 信息树小时刊期在没有根、也没有输入、也没有未完成材料时，状态是 `empty`，不再是 `ready`。类目小时没有分类时同样是 `empty`。页面写「本小时暂无入料」。旧的 `ready` 且根数为 0 的小时，页面也按空小时说明。
-- 类目候选放行雪球 7x24（`xueqiu:home:livenews`）。信息树候选、信息准备和阅读分类仍按 `config/flash-sources.json` 排除它，产业在线快讯等其它快讯两边都排除。YouTube 仍不进类目。
-- 类目双栏里，信息树默认折起，类目是主栏。窄屏类目在上，树在下。类目块是方向标题、一句要点和原文链接，不再套阅读卡片。
-- 待标注送给模型的不超过 8 条。模型没覆盖到的材料按标题补成短句和跳转，放在同一个默认折起的块里。正式分类仍一次最多 12 条模型事件，没被引用的材料同样按标题补上。一条分类最多保存 80 条事件。
-- 收录时间窗仍是入库时刻，不改成 `published_at`。`report.hourly.failure-catchup` 保持关闭。
-
-## 改动
-
-- 导航：`apps/web/public/brief-page.js`、`information-tree.js`、`app.js`、`report-history.js`。
-- 类目放行 7x24：`packages/domain/src/information-tree-materials.js`，Worker 类目口改用 `categoryCandidates`。
-- 空壳和待标注补齐：`packages/domain/src/hourly-category.js`、`information-tree-service.js`，契约增加 `empty`，事件上限 80。
-- 版式：`apps/web/public/hourly-category-view.js`、`styles.css`。
+- `#report` 没有 `hour`、也没有 `mode=daily` 时，简报按小时报打开，并尽量把当前上海小时写进 `#report?hour=`。点「日报」写成 `?mode=daily`。
+- 信息树和类目都没有根或分类时，状态是 `empty`，不再是 `ready`。页面写「本小时暂无入料」。
+- 雪球 7x24 不放行。类目和信息树共用原来的快讯过滤。
+- 没有目录标签的 X（含 twitter）归入 `social_x`，显示「X」。没有目录标签的雪球博主归入 `social_xueqiu`，显示「雪球」。这两栏按标题一行一条，带原文链接，不打模型。已有目录标签的仍进原分类。其它待标注仍折起，只把 8 条交给模型。
+- 类目是紧凑主视图。信息树默认折起。窄屏类目在上。
+- 收录时间窗不改。`report.hourly.failure-catchup` 保持关闭。
 
 ## 验证
 
-`node --test test/hourly-category.test.js test/flash-sources.test.js test/brief-page.test.js test/report-history.test.js test/information-tree-next.test.js test/uiux-reading.test.js test/hourly-unread.test.js`
+`node --test test/hourly-category.test.js test/flash-sources.test.js test/brief-page.test.js test/report-history.test.js test/information-tree-next.test.js test/uiux-reading.test.js`
 
-- 打开 `#report` 停在小时报，地址带 `?hour=`；`?mode=daily` 刷新仍是日报。
-- 类目候选含雪球 7x24，树候选不含。
-- 没有材料的小时状态是 `empty`，页面写「本小时暂无入料」。
-- 待标注块默认折起，正式方向是短要点和原文链接。窄屏先看到类目。
+- 打开 `#report` 停在小时报，地址带 `?hour=`。
+- 雪球 7x24 不在树候选里，也不在类目候选里。
+- 没有标签的 X 帖和雪球博主帖各自成栏，每条一个标题和原文链接，不调用模型。
+- 没有材料的小时状态是 `empty`。
 
 ## 遗留
 
-信息树和阅读列表仍不收雪球 7x24。已经封好的小时不会因为这次改动自动重写；下一轮整点任务才会按新规则写类目。失败补跑没有打开。
+已经封好的小时不会自动重写。下一轮整点任务才按新规则写类目。失败补跑没有打开。

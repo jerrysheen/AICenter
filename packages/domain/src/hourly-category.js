@@ -62,8 +62,20 @@ export function primaryCategoryId(tagIds, catalog) {
   return UNTAGGED_CATEGORY_ID;
 }
 
+export const SOCIAL_X_CATEGORY_ID = 'social_x';
+export const SOCIAL_XUEQIU_CATEGORY_ID = 'social_xueqiu';
+
+export function socialCategoryId(item) {
+  const provider = String(item?.provider || '').toLowerCase();
+  if (provider === 'x' || provider === 'twitter') return SOCIAL_X_CATEGORY_ID;
+  if (provider === 'xueqiu') return SOCIAL_XUEQIU_CATEGORY_ID;
+  return '';
+}
+
 function categoryLabel(id, classification) {
   if (id === UNTAGGED_CATEGORY_ID) return UNTAGGED_CATEGORY_LABEL;
+  if (id === SOCIAL_X_CATEGORY_ID) return 'X';
+  if (id === SOCIAL_XUEQIU_CATEGORY_ID) return '雪球';
   return classification.tags.find((tag) => tag.id === id)?.name || id;
 }
 
@@ -76,7 +88,7 @@ function categoryOrder(classification) {
     seen.add(id);
     order.push(id);
   }
-  order.push(UNTAGGED_CATEGORY_ID);
+  order.push(SOCIAL_X_CATEGORY_ID, SOCIAL_XUEQIU_CATEGORY_ID, UNTAGGED_CATEGORY_ID);
   return order;
 }
 
@@ -86,7 +98,8 @@ export function bucketCategoryItems(items, catalog) {
   for (const item of items || []) {
     const sourceId = String(item?.sourceId || item?.id || '').trim();
     if (!sourceId) continue;
-    const id = primaryCategoryId(item?.tags, classification);
+    const tagged = primaryCategoryId(item?.tags, classification);
+    const id = tagged !== UNTAGGED_CATEGORY_ID ? tagged : (socialCategoryId(item) || UNTAGGED_CATEGORY_ID);
     const bucket = grouped.get(id) || [];
     bucket.push({
       sourceId,
@@ -344,12 +357,14 @@ export function createHourlyCategoryService({
         excerpt: looked?.excerpt || row.excerpt || row.summary || row.title || '',
         tags: Array.isArray(tags) ? tags : [],
         eventAt: Number(row.eventAt) || 0,
+        provider: row.provider || '',
       };
     });
     const buckets = bucketCategoryItems(prepared, classification);
     const untaggedCount = buckets.find((bucket) => bucket.id === UNTAGGED_CATEGORY_ID)?.items.length || 0;
     const categories = [];
     for (const bucket of buckets) {
+      const social = bucket.id === SOCIAL_X_CATEGORY_ID || bucket.id === SOCIAL_XUEQIU_CATEGORY_ID;
       const untagged = bucket.id === UNTAGGED_CATEGORY_ID;
       const modelCap = untagged ? Math.min(maxItems, UNTAGGED_MODEL_ITEMS) : maxItems;
       const sent = bucket.items.slice(0, modelCap);
@@ -381,6 +396,17 @@ export function createHourlyCategoryService({
           generatedAt: now(),
         };
       };
+      if (social) {
+        const covered = coverCategoryEvents([], bucket.items, CATEGORY_EVENT_STORE_LIMIT);
+        categories.push({
+          ...base,
+          events: covered.events,
+          truncated: covered.truncated,
+          status: covered.events.length ? 'ready' : 'failed',
+          generatedAt: now(),
+        });
+        continue;
+      }
       try {
         if (typeof agentRuntime?.run !== 'function') throw new Error('分类小时报没有模型执行器');
         const payload = {

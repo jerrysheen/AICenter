@@ -671,7 +671,7 @@ export function createAiCenterWorker(options = {}) {
   const hourlyCategory=categoryOn && categoryCatalog && categoryMaterials ? createHourlyCategoryService({
     repository:store.repositories.hourlyCategory,
     taggingRepository:store.repositories.tagging,
-    candidatePort:categoryMaterials.categoryCandidates,
+    candidatePort:categoryMaterials.candidates,
     catalog:categoryCatalog,
     agentRuntime,
     enabled:true,
