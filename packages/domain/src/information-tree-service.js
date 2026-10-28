@@ -4,7 +4,7 @@ import {materialHash,materialHashYielding,prepareDailyMaterials} from './daily-m
 import {yieldEventLoop} from './event-loop.js';
 import {needsZhLocalization} from './localize-texts.js';
 import {runBounded} from './daily-analysis.js';
-import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,hourlyModelQueueTimeoutMs,hourlyCatchupBudgetMs,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS} from './information-tree-policy.js';
+import {treeCatalog,treeSource,treeFailure,formatCondenseFailureLog,formatTreeHourlyCallLog,describeCondenseFailure,isTerminalPendingReason,isTruncatedModelFailure,cachedTruncationFailure,cachedFlashQuotaWait,hourlyModelQueueTimeoutMs,hourlyCatchupBudgetMs,HOURLY_TRUNCATION_FALLBACK_MODEL,HOURLY_TRUNCATION_MAX_TOKENS,tagIdFromTagHints,validTagHintIds} from './information-tree-policy.js';
 import {readingClassKeyEnvs} from './reading-hour-service.js';
 import {isFlashSource} from './flash-sources.js';
 import {boundedInt,isAttributionValidationError,isRetryableUpstreamStatus,modelRetryDelayMs,nextHourlyAttempt,sameIdSet,upstreamHttpStatus} from './report-reliability.js';
@@ -269,7 +269,14 @@ export function createInformationTreeService({repository,reportRepository,feedSe
   ensurePolicy('local');
   const reader=createInformationTreeReader({repository,timezone,pipeline:'tree-v3',catalog});
   const reusableInformation=node=>(!articleStrategy || node?.formatVersion===ARTICLE_VALIDATOR_VERSION && Boolean(node.body)) && node?.validatorVersion===validatorVersion && [skills.information.version,...(skills.information.compatiblePromptHashes || [])].includes(node.effectivePromptHash);
-  async function classified(node,m,s) {
+  function readTagHints(m,s) {
+    if(typeof tagHints!=='function') return [];
+    try {
+      const hinted=tagHints(s.workspaceId,m);
+      return Array.isArray(hinted) ? hinted : [];
+    } catch { return []; }
+  }
+  async function classified(node,m,s,{applyHints=false}={}) {
     let assigned;
     try {assigned=primaryTag?.(s.workspaceId,m);} catch {}
     let tagId=node.tagId,source=node.classification?.source==='reclassified' ? 'reclassified' : 'model';
@@ -279,9 +286,14 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     }
     if(assigned?.locked===true){tagId=modelTags.has(assigned.tagId) ? assigned.tagId : null;source='manual-lock';}
     else if(classificationOverrideForReplay){tagId=classificationOverrideForReplay(m);source='legacy-control';}
-    else if(!articleStrategy && node.catalogVersion!==classification.classificationVersion && classification.needsReclassification(node)) {
-      const output=await model('classification',{title:node.title,text:node.text,tags:classification.tags},raw=>({tagId:modelTags.has(raw?.tagId) ? raw.tagId : null}),s);
-      tagId=output.tagId;source='reclassified';
+    else {
+      const hinted=applyHints ? validTagHintIds(readTagHints(m,s), modelTags) : [];
+      if(hinted.length) {
+        if(!hinted.includes(tagId)) tagId=hinted[0];
+      } else if(!articleStrategy && node.catalogVersion!==classification.classificationVersion && classification.needsReclassification(node)) {
+        const output=await model('classification',{title:node.title,text:node.text,tags:classification.tags},raw=>({tagId:modelTags.has(raw?.tagId) ? raw.tagId : null}),s);
+        tagId=output.tagId;source='reclassified';
+      }
     }
     if(!modelTags.has(tagId))tagId=null;
     if(tagId===node.tagId && node.catalogVersion===classification.classificationVersion && node.classification?.source===source)return node;
@@ -445,7 +457,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
     const source=treeSource(m),sourceHash=await materialHashYielding(source),sourceVersion=String(m.version || m.updatedAt || sourceHash);
     // This prompt revision only clarifies titles; completed, validated text remains reusable.
     const head=repository.informationHead(s.workspaceId,m.id)?.node;
-    if(head?.sourceVersion===sourceVersion && reusableInformation(head) && head.draftKey===materialHash({source,skill:head.effectivePromptHash,generationVersion:generationVersion('information')})) {s.cacheHits=(s.cacheHits || 0)+1;return classified(head,m,s);}
+    if(head?.sourceVersion===sourceVersion && reusableInformation(head) && head.draftKey===materialHash({source,skill:head.effectivePromptHash,generationVersion:generationVersion('information')})) {s.cacheHits=(s.cacheHits || 0)+1;return classified(head,m,s,{applyHints:true});}
     const version=await materialHashYielding({source,skill:skills.information.version,generationVersion:generationVersion('information')}),id=`i:${version}`;
     const stateKey=`${articleStrategy ? 'article' : 'information'}:${m.id}`,previous=reportRepository.getAnalysisStage(s.workspaceId,'tree-preparation',stateKey,sourceHash);
     const saved=repository.getNode(s.workspaceId,id);
@@ -454,7 +466,7 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       s.cacheHits=(s.cacheHits || 0)+1;
       const revisionVersion=materialHash({draftKey:version,sourceVersion});
       const revision=saved.sourceVersion===sourceVersion ? saved : repository.saveNode(s.workspaceId,{...saved,id:`i:${revisionVersion}`,version:revisionVersion,sourceVersion,sourceUpdatedAt:m.updatedAt ?? m.obtainedAt ?? m.publishedAt ?? window.startAt});
-      return classified(revision,m,s);
+      return classified(revision,m,s,{applyHints:true});
     }
     if(!source.paragraphs.length || !source.paragraphs.some(p=>/[\p{L}\p{N}]/u.test(p.text)) || (m.missing?.includes('title_only') && !source.paragraphs.some(p=>p.role==='body')))throw Object.assign(new Error('保存材料无独立内容'),{code:'needs-content'});
     const check=raw=>{
@@ -491,17 +503,17 @@ export function createInformationTreeService({repository,reportRepository,feedSe
       }
       output=await model('information',{source:{...modelSource,paragraphs:condensed},tags},check,s);
     }
-    if(articleStrategy && output?.status!=='needs_content') {
-      const hinted=tagHints?.(s.workspaceId,m);
-      const preferred=Array.isArray(hinted) ? hinted.find(id=>modelTags.has(id)) : '';
-      if(preferred) output={...output,tagId:preferred};
+    if(output?.status!=='needs_content') {
+      const hinted=readTagHints(m,s);
+      const next=tagIdFromTagHints(output.tagId, hinted, modelTags, {replace:articleStrategy});
+      if(next!==output.tagId) output={...output,tagId:next};
     }
     if(output.status==='needs_content')throw Object.assign(new Error('保存材料不足以提炼'),{code:'needs-content'});
     const node=repository.saveNode(s.workspaceId,{...output,id,version,layer:'information',children:[],articleIds:[m.id],sourceId:m.id,
       sourceRefs:m.sourceRefs || [],window,eventAt:m.eventAt ?? m.publishedAt ?? window.startAt,sourceUpdatedAt:m.updatedAt ?? m.obtainedAt ?? m.publishedAt ?? window.startAt,generatedAt:now(),
       draftKey:version,sourceVersion,effectivePromptHash:skills.information.version,validatorVersion,catalogVersion:classification.classificationVersion,...(articleStrategy ? {formatVersion:ARTICLE_VALIDATOR_VERSION} : {}),inputScope:source.inputScope,
       classification:{source:'model',ruleVersion:classification.classificationVersion},...(output.readingClassification ? {readingClassification:output.readingClassification} : {}),safePassthrough:Array.from(output.text).length<=80 && !/你身边|附近的停车场|敬请|点击|不容错过/u.test(output.text)});
-    return classified(node,m,s);
+    return classified(node,m,s,{applyHints:true});
   }
   async function condense(layer,inputs,window,s) {
     const groups=new Map();

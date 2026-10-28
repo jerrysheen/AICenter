@@ -646,7 +646,8 @@ export function createAiCenterWorker(options = {}) {
     tagHints:(workspaceId,m)=>{
       const ref=m.sourceRefs?.find(r=>r.type==='media-body' || r.type==='content-item');if(!ref)return [];
       const row=store.repositories.tagging.listTaggings(workspaceId,ref.type==='media-body' ? 'media-index' : 'content-item',[ref.type==='media-body' ? mediaResourceId(ref.id) : ref.id])[0];
-      if(row && (row.tagCatalogVersion!==treeCatalog.version || row.analyzedAt<(m.updatedAt || 0)))return undefined;
+      // A newer updatedAt or a different catalog version string used to hide this row.
+      // Prepare then left tagId null. Return the stored tags; the tree drops unknown ids.
       return row?.tags || [];
     },
     generationConfig:Object.fromEntries([...(articleStrategy ? ['article-normalize'] : []),'hourly-brief','daily-analysis'].map(task=>{const route=resolveHarnessLlm(env,{closedTask:task});return [task==='article-normalize' ? 'information' : task,{provider:route.provider,model:route.model,protocol:route.protocol,...(route.execution ? {execution:route.execution} : {})}];})),

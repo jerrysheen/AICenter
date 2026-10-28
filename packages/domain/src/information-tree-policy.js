@@ -10,6 +10,29 @@ export function treeCatalog(catalog) {
     needsReclassification:node=>!migration || node.catalogVersion!==migration.fromVersion || migration.keywords.some(word=>`${node.title}\n${node.text}`.toLowerCase().includes(word.toLowerCase()))};
 }
 
+// Gemma resource_taggings projected onto the live catalog. Unknown ids are skipped.
+// groupByTag is not applied here; hourly and daily grouping still maps the chosen id.
+export function validTagHintIds(hints, ids) {
+  if (!Array.isArray(hints)) return [];
+  const seen = new Set();
+  const tags = [];
+  for (const raw of hints) {
+    if (typeof raw !== 'string' || !ids?.has?.(raw) || seen.has(raw)) continue;
+    seen.add(raw);
+    tags.push(raw);
+  }
+  return tags;
+}
+
+// replace: fresh article output keeps the first catalog id even when the model tag is also listed.
+// Otherwise an id that is already in the Gemma list stays. Empty hints do not invent or clear a tag.
+export function tagIdFromTagHints(current, hints, ids, { replace = false } = {}) {
+  const tags = validTagHintIds(hints, ids);
+  if (!tags.length) return current ?? null;
+  if (!replace && tags.includes(current)) return current;
+  return tags[0];
+}
+
 export function redactCondenseLog(value) {
   return String(value ?? '')
     .replace(/AIza[0-9A-Za-z\-_]{8,}/g, '[redacted]')
