@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { HOURLY_CATEGORY_FORMAT, UNTAGGED_CATEGORY_ID } from '../../contracts/src/hourly-category.js';
+import { HOURLY_CATEGORY_EVENT_MAX, HOURLY_CATEGORY_FORMAT, UNTAGGED_CATEGORY_ID } from '../../contracts/src/hourly-category.js';
 import { localizationItemId } from './localize-texts.js';
 import { treeCatalog } from './information-tree-policy.js';
 
@@ -9,14 +9,17 @@ export const CATEGORY_EXCERPT_CHARS = 200;
 export const CATEGORY_TITLE_CHARS = 180;
 export const CATEGORY_EVENT_LIMIT = 12;
 export const CATEGORY_BUCKET_ITEM_LIMIT = 40;
+export const UNTAGGED_MODEL_ITEMS = 8;
+export const CATEGORY_EVENT_STORE_LIMIT = HOURLY_CATEGORY_EVENT_MAX;
 const HOUR_MS = 3_600_000;
 
 export const HOURLY_CATEGORY_INSTRUCTION = [
   '只根据给定 JSON 写这一类在该小时里发生的事。不要联网，不要读取或补写正文，不要编造输入里没有的事实。',
   '返回一个 JSON 对象，不要 Markdown。形状必须是 {"categoryId":"...","events":[{"bullet":"...","sourceIds":["..."]}]}。',
   'categoryId 必须与输入 category.id 相同。每条 sourceIds 只能使用输入 items 里的 sourceId，且至少包含一个。',
-  '事件建议 8 到 12 条，最多 12 条。同一件事合并成一条，bullet 用一句简体中文。',
-  '输入 truncated 为 true 时，只概括已经给出的条目。',
+  '同一件事才合并成一条，合并后的 sourceIds 写上全部相关材料。不要为了缩短丢掉不同的事。',
+  '正式分类最多 12 条。输入里若有 eventLimit，事件条数不超过它。bullet 用一句简体中文，不要重写标题、摘要和正文。',
+  '没有写进事件的材料由系统按标题补上。输入 truncated 为 true 时，先覆盖已经给出的条目。',
 ].join('\n');
 
 export const HOURLY_CATEGORY_PROMPT_HASH = createHash('sha256').update(HOURLY_CATEGORY_INSTRUCTION).digest('hex');
@@ -269,8 +272,34 @@ async function tagsBySource(taggingRepository, workspaceId, candidates) {
   return map;
 }
 
+export function coverCategoryEvents(events, items, limit = CATEGORY_EVENT_STORE_LIMIT) {
+  const cited = new Set();
+  const kept = [];
+  let truncated = false;
+  for (const event of events || []) {
+    if (kept.length >= limit) { truncated = true; break; }
+    const ids = [];
+    for (const sourceId of event?.sourceIds || []) {
+      if (cited.has(sourceId)) continue;
+      cited.add(sourceId);
+      ids.push(sourceId);
+    }
+    if (!ids.length) continue;
+    kept.push({ bullet: event.bullet, sourceIds: ids });
+  }
+  for (const item of items || []) {
+    const sourceId = String(item?.sourceId || '');
+    if (!sourceId || cited.has(sourceId)) continue;
+    if (kept.length >= limit) { truncated = true; break; }
+    const bullet = clipCategoryText(item?.title || item?.excerpt, 180) || '这条材料没有标题';
+    kept.push({ bullet, sourceIds: [sourceId] });
+    cited.add(sourceId);
+  }
+  return { events: kept, truncated };
+}
+
 function editionStatus(categories) {
-  if (!categories.length) return 'ready';
+  if (!categories.length) return 'empty';
   const failed = categories.filter((category) => category.status === 'failed').length;
   if (!failed) return 'ready';
   if (failed === categories.length) return 'failed';
@@ -321,8 +350,10 @@ export function createHourlyCategoryService({
     const untaggedCount = buckets.find((bucket) => bucket.id === UNTAGGED_CATEGORY_ID)?.items.length || 0;
     const categories = [];
     for (const bucket of buckets) {
-      const sent = bucket.items.slice(0, maxItems);
-      const truncated = bucket.items.length > sent.length;
+      const untagged = bucket.id === UNTAGGED_CATEGORY_ID;
+      const modelCap = untagged ? Math.min(maxItems, UNTAGGED_MODEL_ITEMS) : maxItems;
+      const sent = bucket.items.slice(0, modelCap);
+      const sentShort = bucket.items.length > sent.length;
       const inputItems = sent.map((item) => ({
         sourceId: item.sourceId,
         title: item.title,
@@ -333,11 +364,22 @@ export function createHourlyCategoryService({
         id: bucket.id,
         label: bucket.label,
         inputCount: bucket.items.length,
-        truncated,
+        truncated: sentShort,
         model: '',
         promptHash: HOURLY_CATEGORY_PROMPT_HASH,
         generatedAt: now(),
         events: [],
+      };
+      const store = (events, model = '') => {
+        const covered = coverCategoryEvents(events, bucket.items, CATEGORY_EVENT_STORE_LIMIT);
+        return {
+          ...base,
+          events: covered.events,
+          truncated: sentShort || covered.truncated,
+          model: String(model || '').slice(0, 80),
+          status: covered.events.length ? 'ready' : 'failed',
+          generatedAt: now(),
+        };
       };
       try {
         if (typeof agentRuntime?.run !== 'function') throw new Error('分类小时报没有模型执行器');
@@ -345,7 +387,8 @@ export function createHourlyCategoryService({
           window,
           category: { id: bucket.id, label: bucket.label },
           items: inputItems,
-          ...(truncated ? { truncated: true } : {}),
+          ...(untagged ? { eventLimit: UNTAGGED_MODEL_ITEMS } : {}),
+          ...(sentShort ? { truncated: true } : {}),
         };
         const result = await agentRuntime.run({
           closedContext: true,
@@ -362,19 +405,13 @@ export function createHourlyCategoryService({
           categoryId: bucket.id,
           sourceIds: inputItems.map((item) => item.sourceId),
         });
-        categories.push({
-          ...base,
-          events: parsed.events,
-          model: String(result?.model || result?.modelId || '').slice(0, 80),
-          status: 'ready',
-          generatedAt: now(),
-        });
+        categories.push(store(parsed.events, result?.model || result?.modelId));
       } catch (error) {
-        categories.push({
-          ...base,
+        const saved = store([]);
+        categories.push(saved.events.length ? saved : {
+          ...saved,
           status: 'failed',
           error: String(error?.message || error).slice(0, 180) || '分类简报失败',
-          generatedAt: now(),
         });
       }
     }

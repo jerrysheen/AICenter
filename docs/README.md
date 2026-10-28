@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-28-hourly-nav-density.md`：简报打开停在小时报，地址写上 `?hour=`。类目小时报放行雪球 7x24，待标注折起，没有材料的刊期写成 `empty`。信息树仍排除快讯。不重开失败补跑。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
+
 - `progress/2026-10-28-bsk-daemon-watch.md`：BrowserSkill daemon 退出后，启动器和 Windows Worker 用原来的 `daemon start` 把它拉起来。`BSK_AUTO_START` 仍是 0，CLI 不会偷启。`AI_CENTER_BSK_DAEMON_WATCH=0` 才关掉看守。不新增 migration。需要重启 Worker；启动器里的检查要重新运行 `scripts/start-ai-center.ps1`。
 
 - `progress/2026-10-28-hourly-no-catchup.md`：`report.hourly.failure-catchup` 默认不再启用。未设置 `AI_CENTER_HOURLY_NO_CATCHUP` 时，失败小时不再重新入队打模型；`report.hourly.default` 整点任务、分类小时报、阅读分类和文章整理保持原样。设为 `0` 后重启 Worker 可恢复补跑。不新增 migration。只需要重启 Worker。

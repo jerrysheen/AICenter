@@ -48,14 +48,14 @@ export const TreeNodeSchema=InformationOutputSchema.extend({body:z.string().trim
   draftKey:z.string().optional(),sourceVersion:z.string().optional(),effectivePromptHash:z.string().optional(),validatorVersion:z.string().optional(),catalogVersion:z.string().optional(),inputScope:z.enum(['full','excerpt']).optional(),
   classification:z.object({source:z.enum(['model','manual-lock','reclassified','legacy-control']),ruleVersion:z.string()}).optional(),readingClassification:ReadingClassificationSchema.optional(),safePassthrough:z.boolean().optional()}).strict().superRefine((n,ctx)=>{if(n.formatVersion && (n.layer!=='information' || !n.body))ctx.addIssue({code:'custom',message:'新版文章必须有正文，且只属于信息层'});if(n.body && !n.formatVersion)ctx.addIssue({code:'custom',message:'正文必须带明确文章协议版本'});if(n.body && n.layer!=='information')ctx.addIssue({code:'custom',message:'上层不能保存文章正文'});});
 export const TreeEditionSchema=z.object({id,layer:z.enum(['hourly','daily']),window:z.object({startAt:z.number().int(),endAt:z.number().int()}),
-  timezone:z.string(),status:z.enum(['ready','partial','failed']),roots:z.array(id),inputIds:z.array(id),pendingIds:z.array(id),pending:z.array(PendingSchema).optional(),groupFailures:z.array(PendingSchema.extend({tagId})).optional(),policyHash:z.string().optional(),missingHours:z.array(z.number().int()),generatedAt:z.number().int(),
+  timezone:z.string(),status:z.enum(['ready','partial','failed','empty']),roots:z.array(id),inputIds:z.array(id),pendingIds:z.array(id),pending:z.array(PendingSchema).optional(),groupFailures:z.array(PendingSchema.extend({tagId})).optional(),policyHash:z.string().optional(),missingHours:z.array(z.number().int()),generatedAt:z.number().int(),
   attemptCount:z.number().int().positive().optional(),terminal:z.boolean().optional()}).strict();
 export const PrepareTreeInformationInputSchema=z.object({workspaceId:z.string().default('local'),sourceIds:z.array(id).min(1).max(100),force:z.boolean().default(false),catchup:z.boolean().default(false)}).strict();
 export const TreeWindowQuerySchema=z.object({startAt:z.coerce.number().int().nonnegative(),endAt:z.coerce.number().int().positive()}).refine(v=>v.endAt>v.startAt && v.endAt-v.startAt<=7*86400000,'树查询窗口最多七日');
 export const TreeNodeQuerySchema=z.object({id}).strict();
 const TreeIndexWindowSchema=z.object({startAt:z.number().int(),endAt:z.number().int()}).strict();
 export const TreeIndexEditionSchema=z.object({
-  id,layer:z.enum(['hourly','daily']),window:TreeIndexWindowSchema,status:z.enum(['ready','partial','failed']),
+  id,layer:z.enum(['hourly','daily']),window:TreeIndexWindowSchema,status:z.enum(['ready','partial','failed','empty']),
   generatedAt:z.number().int(),rootCount:z.number().int().nonnegative(),hasEditorial:z.boolean(),
 }).strict();
 export const TreeIndexInformationSchema=z.object({

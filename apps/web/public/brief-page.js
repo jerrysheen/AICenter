@@ -121,6 +121,14 @@ function readingSkeleton(target, {hourly=false}={}) {
   target.replaceChildren(hourChromeSkeleton('daily'), layout);
 }
 
+export function briefTreeMode({ hour = null, date = '', history = false, archive = false, mode = '' } = {}) {
+  if (history || archive) return 'daily';
+  if (Number.isInteger(hour) && hour >= 0 && hour <= 23) return 'hourly';
+  if (mode === 'hourly' || mode === 'daily' || mode === 'discussion') return mode;
+  if (date) return 'daily';
+  return 'hourly';
+}
+
 export function createBriefPage(host) {
   let treeActive=false, treeReady=false;
   let treeManifest=null,treeManifestAt=0,treeManifestRequest=null,treeCacheEpoch=0;
@@ -222,19 +230,25 @@ export function createBriefPage(host) {
     if (active() && !document.hidden) timer=setInterval(()=>check().catch(()=>{}),60000);
   }
 
-  async function mount(target, {date='',history=false,archive=false,hour=null,node:focusNodeId=''}={}) {
+  async function mount(target, {date='',history=false,archive=false,hour=null,node:focusNodeId='',mode:requestedMode=''}={}) {
     setIdentity();
     const clockHour=Number.isInteger(hour) && hour>=0 && hour<=23 ? hour : null;
+    const treeMode=briefTreeMode({hour:clockHour,date,history,archive,mode:requestedMode});
     const focusId=String(focusNodeId || '');
     const nextRoute=archive ? 'archive' : date || (history ? 'history' : 'current');
     if (treeReady && root===target && routeKey===nextRoute && root.childElementCount && (treeActive || dateInput?.isConnected)) {
       if(treeActive){
-        if(clockHour!=null && !history && !archive) {
+        if(treeMode==='hourly' && !history && !archive) {
           tree.focusNode(focusId);
           if(!focusId) tree.clearOpened?.();
-          if(tree.showingHour?.(clockHour)) return tree.resume();
-          return tree.selectHour(clockHour);
+          if(clockHour!=null) {
+            if(tree.showingHour?.(clockHour)) return tree.resume();
+            return tree.selectHour(clockHour);
+          }
+          if(tree.currentMode?.()!=='hourly') return tree.switchMode?.('hourly');
+          return tree.resume();
         }
+        if(tree.currentMode?.() && tree.currentMode()!==treeMode) return tree.switchMode?.(treeMode);
         if(!focusId) tree.clearOpened?.();
         return tree.resume();
       }
@@ -264,7 +278,7 @@ export function createBriefPage(host) {
       const treeEnabled=Boolean(manifest) && manifestProvesTree(manifest);
       if(treeEnabled) {
         pause();treeActive=true;treeReady=false;
-        await tree.mount(root,{manifest,date,history,mode:clockHour!=null && !history && !archive ? 'hourly' : 'daily',hour:clockHour,node:focusId,resetSelection:true});
+        await tree.mount(root,{manifest,date,history,mode:treeMode,hour:clockHour,node:focusId,resetSelection:true});
         if(token!==generation)return;
         treeReady=true;
         return;

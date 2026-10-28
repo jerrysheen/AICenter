@@ -204,6 +204,8 @@ test('hourly candidates, preparation and reading classification skip flash sourc
   });
   const candidates = await port.candidates('local', {startAt: 0, endAt: 10});
   assert.deepEqual(candidates.map((row) => row.id), ['feed:article']);
+  const categoryCandidates = await port.categoryCandidates('local', {startAt: 0, endAt: 10});
+  assert.deepEqual(categoryCandidates.map((row) => row.id), ['feed:flash', 'feed:article']);
 
   const readingCalls = [];
   const reading = createReadingHourService({

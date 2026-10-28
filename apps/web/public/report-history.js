@@ -17,6 +17,14 @@ export function reportHistoryAction(previous = {}, next = {}) {
   return 'replace';
 }
 
+export function reportModeHash(currentHash, mode) {
+  const raw = String(currentHash || '#report').replace(/^#/, '');
+  const [path] = raw.split('?');
+  const safe = path.startsWith('report') ? path : 'report';
+  if (mode === 'daily' || mode === 'hourly' || mode === 'discussion') return `#${safe}?mode=${mode}`;
+  return `#${safe}`;
+}
+
 export function reportListHash(detailHash) {
   const raw = String(detailHash || '').replace(/^#/, '');
   const [path, query = ''] = raw.split('?');

@@ -2,15 +2,26 @@ import {material,materialHash,paragraphs,socialParagraphs} from './daily-materia
 import { isFlashSource } from './flash-sources.js';
 import { isAwesomeListUpdateNoise } from './awesome-list-noise.js';
 
-function keepHourlyCandidate(row, flashSources) {
+const XUEQIU_LIVENEWS_ID = 'xueqiu:home:livenews';
+
+export function isXueqiuLiveNewsRow(row) {
+  const keys = [row?.sourceExternalId, row?.sourceKey, row?.sourceId, row?.externalId];
+  if (keys.some((key) => String(key || '') === XUEQIU_LIVENEWS_ID)) return true;
+  const names = [row?.sourceName, row?.publisher, row?.displayName];
+  return names.some((name) => String(name || '').trim() === '雪球7x24');
+}
+
+function keepHourlyCandidate(row, flashSources, options = {}) {
   if (row.provider === 'youtube') return false;
-  if (isFlashSource({
+  const flash = isFlashSource({
     id: row.id,
     sourceExternalId: row.sourceExternalId,
     sourceKey: row.sourceKey,
     publisher: row.sourceName || row.publisher,
     displayName: row.sourceName,
-  }, flashSources)) return false;
+  }, flashSources);
+  // 信息树仍整源排除快讯。类目小时报单独放行雪球 7x24，产业在线等其它快讯继续排除。
+  if (flash && !(options.allowXueqiuLiveNews === true && isXueqiuLiveNewsRow(row))) return false;
   return !isAwesomeListUpdateNoise({
     title: row.title,
     sourceUrl: row.sourceUrl || row.canonicalUrl,
@@ -19,7 +30,7 @@ function keepHourlyCandidate(row, flashSources) {
 
 export function createTreeMaterialPort({feedService,mediaService,flashSources=null}) {
   return {
-    async candidates(workspaceId,window) {
+    async candidates(workspaceId,window,options={}) {
       const rows=[];let cursor=null;
       while(true) {
         const page=feedService.listContentItemsInWindow(workspaceId,{...window,timeBasis:'ingested',metadataOnly:true,limit:500,cursor});rows.push(...page);
@@ -27,10 +38,13 @@ export function createTreeMaterialPort({feedService,mediaService,flashSources=nu
         const last=page.at(-1);cursor={id:last.id.slice(5),eventAt:last.eventAt};
       }
       const media=mediaService?.informationCandidates(workspaceId,window) || [];
-      const visible=[...rows,...media].filter(row=>keepHourlyCandidate(row, flashSources));
+      const visible=[...rows,...media].filter(row=>keepHourlyCandidate(row, flashSources, options));
       return typeof mediaService?.dedupeHourlyCandidates==='function'
         ? mediaService.dedupeHourlyCandidates(workspaceId, visible)
         : visible;
+    },
+    categoryCandidates(workspaceId,window) {
+      return this.candidates(workspaceId,window,{allowXueqiuLiveNews:true});
     },
     async materials(workspaceId,sourceIds) {
       const feedIds=sourceIds.filter(id=>id.startsWith('feed:')).map(id=>id.slice(5));

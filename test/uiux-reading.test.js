@@ -35,6 +35,9 @@ test('canonical and slash-prefixed deep links resolve to the same target and ret
   assert.equal(context.parseLocation('assets').assetPane, 'holdings');
   assert.equal(context.parseLocation('assets/analysis').assetPane, 'analysis');
   assert.equal(context.parseLocation('report').reportHour, null);
+  assert.equal(context.parseLocation('report').reportMode, '');
+  assert.equal(context.parseLocation('report?mode=daily').reportMode, 'daily');
+  assert.equal(context.parseLocation('report?hour=15').reportMode, '');
   assert.equal(context.parseLocation('report?hour=15').reportHour, 15);
   assert.equal(context.parseLocation('report?hour=15').reportPane, 'today');
   assert.equal(context.parseLocation('#report/2026-10-09?hour=15').reportHour, 15);

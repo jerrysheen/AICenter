@@ -3,6 +3,7 @@ import { EntityIdSchema, EpochMillisSchema } from './common.js';
 
 export const HOURLY_CATEGORY_FORMAT = 'hourly-category-v1';
 export const UNTAGGED_CATEGORY_ID = '__untagged__';
+export const HOURLY_CATEGORY_EVENT_MAX = 80;
 
 export const HourlyCategoryIdSchema = z.string().trim().min(1).max(64)
   .regex(/^(?:[a-z][a-z0-9_]*|__untagged__)$/);
@@ -15,7 +16,7 @@ export const HourlyCategoryEventSchema = z.object({
 export const HourlyCategoryBlockSchema = z.object({
   id: HourlyCategoryIdSchema,
   label: z.string().trim().min(1).max(40),
-  events: z.array(HourlyCategoryEventSchema).max(12),
+  events: z.array(HourlyCategoryEventSchema).max(HOURLY_CATEGORY_EVENT_MAX),
   inputCount: z.number().int().nonnegative(),
   truncated: z.boolean(),
   model: z.string().max(80),
@@ -33,7 +34,7 @@ export const HourlyCategoryEditionSchema = z.object({
     startAt: EpochMillisSchema,
     endAt: EpochMillisSchema,
   }).strict(),
-  status: z.enum(['ready', 'partial', 'failed']),
+  status: z.enum(['ready', 'partial', 'failed', 'empty']),
   dualRun: z.literal(true),
   untaggedCount: z.number().int().nonnegative(),
   categories: z.array(HourlyCategoryBlockSchema).max(80),

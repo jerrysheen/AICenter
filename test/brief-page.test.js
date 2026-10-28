@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { briefDate, briefDayWindow, informationSignature, distinctMaterialCount } from '../apps/web/public/brief-page.js';
+import { briefDate, briefDayWindow, briefTreeMode, informationSignature, distinctMaterialCount } from '../apps/web/public/brief-page.js';
 import { HourlyDigestIndexQuerySchema, HourlyDigestIndexSchema, DailyBriefWindowQuerySchema } from '../packages/contracts/src/report.js';
+
+test('opening the brief without an hour stays on hourly, and an explicit daily mode does not', () => {
+  assert.equal(briefTreeMode({}), 'hourly');
+  assert.equal(briefTreeMode({ hour: 20 }), 'hourly');
+  assert.equal(briefTreeMode({ mode: 'daily' }), 'daily');
+  assert.equal(briefTreeMode({ mode: 'discussion' }), 'discussion');
+  assert.equal(briefTreeMode({ date: '2026-10-28' }), 'daily');
+  assert.equal(briefTreeMode({ date: '2026-10-28', hour: 7 }), 'hourly');
+  assert.equal(briefTreeMode({ history: true }), 'daily');
+});
 
 test('brief calendar uses Instance timezone and respects DST instead of the browser timezone',()=>{
   assert.equal(briefDate(Date.parse('2026-10-04T17:00:00Z'),'Asia/Shanghai'),'2026-10-05');
