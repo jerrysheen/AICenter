@@ -332,8 +332,17 @@ test('category blocks render bullets and article links', () => {
       textContent: '',
       hidden: false,
       children: [],
-      append(...nodes) { this.children.push(...nodes); },
-      replaceChildren(...nodes) { this.children = [...nodes]; },
+      parentElement: null,
+      append(...nodes) {
+        for (const child of nodes) {
+          if (child) child.parentElement = this;
+          this.children.push(child);
+        }
+      },
+      replaceChildren(...nodes) {
+        this.children = [];
+        this.append(...nodes);
+      },
     };
     Object.defineProperty(element, 'href', { writable: true, value: '' });
     return element;
@@ -351,10 +360,45 @@ test('category blocks render bullets and article links', () => {
     }],
   });
   assert.equal(slot.children[0].children[0].textContent, 'AI');
-  assert.equal(slot.children[0].children[0].children[0].textContent, '1 条');
+  assert.equal(slot.children[0].children[0].children[0].textContent, '1');
   assert.match(slot.children[0].children[0].children[1].textContent, /材料已截断/);
-  assert.equal(slot.children[0].children[1].children[0].children[0].textContent, '模型公布新接口。');
-  assert.equal(slot.children[0].children[1].children[0].children[1].children[0].href, '#article/feed:abc');
+  const bullet = slot.children[0].children[1].children[0].children[0];
+  assert.equal(bullet.textContent, '模型公布新接口。');
+  assert.equal(bullet.children[0].href, '#article/feed:abc');
+  assert.equal(bullet.children[0].textContent, '原文');
+  assert.equal(bullet.children[0].parentElement.className, 'hourly-category-bullet');
+  assert.equal(elementsByClass(slot, 'hourly-category-links').length, 0);
+  const mixed = createElement('section');
+  paintHourlyCategory(mixed, {
+    status: 'ready',
+    categories: [
+      {
+        id: '__untagged__',
+        label: '待标注',
+        inputCount: 31,
+        events: [{
+          bullet: '出口民调显示双方均无清晰的执政途径。',
+          links: [{ href: '#article/feed:x' }, { href: '#article/feed:y' }],
+        }],
+      },
+      {
+        id: 'ai',
+        label: 'AI',
+        inputCount: 5,
+        events: [{ bullet: '先看这条。', links: [{ href: '#article/feed:a' }] }],
+      },
+    ],
+  });
+  assert.equal(mixed.children[0].children[0].textContent, 'AI');
+  assert.equal(mixed.children[0].children[0].children[0].textContent, '5');
+  assert.equal(mixed.children[1].tag, 'details');
+  assert.equal(mixed.children[1].open, false);
+  assert.match(mixed.children[1].className, /is-untagged/);
+  assert.equal(mixed.children[1].children[0].textContent, '还没归类 · 31');
+  assert.equal(mixed.children[1].children[0].children.length, 0);
+  const pills = elementsByClass(mixed.children[1], 'hourly-category-link');
+  assert.deepEqual(pills.map((pill) => pill.textContent), ['原文 1', '原文 2']);
+  assert.equal(pills[0].parentElement.className, 'hourly-category-bullet');
   const empty = createElement('section');
   paintHourlyCategory(empty, null);
   assert.equal(empty.children[0].textContent, '分类小时报尚未生成');
@@ -480,8 +524,17 @@ test('dual-run hourly page shows both sections only when the flag is on', () => 
       textContent: '',
       hidden: false,
       children: [],
-      append(...nodes) { this.children.push(...nodes); },
-      replaceChildren(...nodes) { this.children = [...nodes]; },
+      parentElement: null,
+      append(...nodes) {
+        for (const child of nodes) {
+          if (child) child.parentElement = this;
+          this.children.push(child);
+        }
+      },
+      replaceChildren(...nodes) {
+        this.children = [];
+        this.append(...nodes);
+      },
     };
     Object.defineProperty(element, 'href', { writable: true, value: '' });
     return element;
@@ -506,10 +559,14 @@ test('dual-run hourly page shows both sections only when the flag is on', () => 
   flagged.append(day, tree);
   const laid = layoutHourlyDual(flagged, { enabled: true });
   paintHourlyCategory(laid.categorySlot, edition);
-  assert.deepEqual(elementsByClass(flagged, 'hourly-dual-label').map((item) => item.textContent), ['信息树小时', '类目小时']);
+  assert.deepEqual(elementsByClass(flagged, 'hourly-dual-label').map((item) => item.textContent), ['展开看信息树这一小时', '类目小时']);
+  assert.equal(elementsByClass(flagged, 'hourly-dual-tree')[0].open, false);
+  const lead = elementsByClass(flagged, 'hourly-category-lead')[0];
+  assert.equal(lead.textContent, '按方向整理好了，先看要点');
+  assert.equal(lead.hidden, false);
   assert.equal(flagged.children[0].textContent, '今天');
   assert.equal(elementText(elementsByClass(flagged, 'hourly-dual-tree')[0]).includes('信息树里的这一小时'), true);
-  assert.equal(elementText(elementsByClass(flagged, 'hourly-dual-category')[0]).includes('利率维持不变。'), true);
+  assert.equal(elementsByClass(flagged, 'hourly-category-bullet')[0].textContent, '利率维持不变。');
   const link = elementsByClass(flagged, 'hourly-category-link')[0];
   assert.equal(link.href, '#article/media:story');
   assert.equal(link.textContent, '原文');
@@ -522,6 +579,7 @@ test('dual-run hourly page shows both sections only when the flag is on', () => 
   paintHourlyCategory(pendingLayout.categorySlot, null);
   assert.equal(elementText(pending).includes('树侧仍在'), true);
   assert.equal(elementText(pending).includes('分类小时报尚未生成'), true);
+  assert.equal(elementsByClass(pending, 'hourly-category-lead')[0].hidden, true);
   assert.equal(elementsByClass(pending, 'hourly-dual-label').length, 2);
 
   const plain = createElement('div');
@@ -544,6 +602,6 @@ test('dual-run hourly page shows both sections only when the flag is on', () => 
   const bag = live.children;
   live.children = { length: bag.length, *[Symbol.iterator]() { yield* bag; } };
   layoutHourlyDual(live, { enabled: true });
-  assert.deepEqual(elementsByClass(live, 'hourly-dual-label').map((item) => item.textContent), ['信息树小时', '类目小时']);
+  assert.deepEqual(elementsByClass(live, 'hourly-dual-label').map((item) => item.textContent), ['展开看信息树这一小时', '类目小时']);
   assert.equal(elementText(live).includes('集合里的树'), true);
 });

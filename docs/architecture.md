@@ -12,6 +12,8 @@ tree-v3.1审核修复：注册固定report.information.prepare任务，在采集
 
 2026-10-05 用户授权按内容类型分流 TrendForce：原采集任务一次获取，经 Feed 注入 Port 分别写 Media 与行情报价 Service/Repository；硬件报价独立于股票 OHLC。来源和旧 ContentItem 身份保留，迁移显式执行；细则见 `hardware-prices-v1.md`。
 
+2026-10-28 类目小时的手机页在紧凑要点上加轻卡片。小时开场一句淡色导语，每个方向一张卡片，原文是句末小 pill。`__untagged__` 的分桶和 Flash 不变，页面再把它排到末尾，写成「还没归类 · N」并默认折起。信息树仍折在最后。见 `progress/2026-10-28-hourly-companion-cards.md`。
+
 2026-10-28 类目小时报按 Gemma 目录标签分桶。一条材料上的每个有效标签都进对应桶，不再只留第一个。`resource_taggings` 没有、信息树节点上有的 `tagId` 也算进去。Flash 没引用到的材料仍留在该桶。雪球 7x24 不进候选。见 `progress/2026-10-28-hourly-nav-density.md`。
 
 2026-10-28 分类小时报是信息树小时刊期旁边的另一份存储，不替换 `generateHour`，也不关闭 `article-normalize` 或阅读分类。开关打开时，小时页把同一小时分成「信息树小时」和「类目小时」对照；Worker 只为已经跑过的分类小时打一行观察日志，不另开模型调用，也不新加任务类型。桶来自 `resource_taggings` 与 `config/tags.json` 的交集，经现有 `groupByTag`。每个非空桶一次封闭任务 `hourly-category-brief`，走与 `hourly-brief` 相同的小时模型路由。刊期在 migration 97 的 `hourly_category_editions`，`formatVersion=hourly-category-v1`。只有 `AI_CENTER_HOURLY_CATEGORY` 打开时，`report.hourly.extract` 才顺带写入；读取接口不返回模型名。见 `progress/2026-10-28-hourly-category.md`。
