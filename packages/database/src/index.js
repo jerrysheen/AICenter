@@ -766,7 +766,8 @@ export function createStore(databasePath) {
       if (!current) return null;
       if (!claim || current.status !== 'running') return mapJob(current);
       const terminalChunk = error?.code === 'translation-chunk-exhausted';
-      const retry = !terminalChunk && current.attempt_count < current.max_attempts;
+      const terminalHour = error?.terminal === true || error?.code === 'hourly-no-retry';
+      const retry = !terminalChunk && !terminalHour && current.attempt_count < current.max_attempts;
       const status = retry ? 'queued' : 'failed';
       const availableAt = retry ? now + Math.max(0, Number(retryDelayMs) || 0) : current.available_at;
       const errorPayload = jobErrorPayload(error);
@@ -808,10 +809,12 @@ export function createStore(databasePath) {
     },
 
     recoverStaleJobs(staleAfterMs = 10 * 60_000, now = Date.now(), options = {}) {
-      // A restart drops the in-flight attempt. Translation and hourly extract
-      // get one extra max_attempts so the lease does not spend the budget.
+      // A restart drops the in-flight attempt. Translation refunds max_attempts
+      // on every lease interrupt. Hourly extract refunds at most once and never
+      // above 3, so the same hour cannot stay at the head of the queue forever.
       // A runtime cap still fails without that refund.
       const leaseRefundTypes = new Set(['feed.translation.run', 'report.hourly.extract']);
+      const hourlyLeaseAttemptCap = 3;
       const leaseMs = Number(staleAfterMs);
       const duration = Number.isFinite(leaseMs) && leaseMs > 0 ? leaseMs : 10 * 60_000;
       const cutoff = Number(now) - duration;
@@ -833,29 +836,57 @@ export function createStore(databasePath) {
         if (executing.has(row.id) && !runtimeStale && !deadOwner) return [];
         return leaseStale || runtimeStale ? [{ ...row, leaseStale, runtimeStale }] : [];
       });
+      const released = [];
       database.transaction(() => {
         for (const row of rows) {
           const expiredRuntime = row.runtimeStale === true;
+          const hourlyExtract = row.type === 'report.hourly.extract';
           const leaseInterrupted = !expiredRuntime && leaseRefundTypes.has(row.type);
-          const retry = leaseInterrupted || (!expiredRuntime && row.attempt_count < row.max_attempts);
+          let maxAttempts = Number(row.max_attempts);
+          let retry;
+          if (hourlyExtract) {
+            if (leaseInterrupted && maxAttempts < hourlyLeaseAttemptCap) maxAttempts += 1;
+            retry = !expiredRuntime && Number(row.attempt_count) < maxAttempts;
+          } else {
+            retry = leaseInterrupted || (!expiredRuntime && Number(row.attempt_count) < Number(row.max_attempts));
+            if (leaseInterrupted) maxAttempts += 1;
+          }
           const status = retry ? 'queued' : 'failed';
           const error = expiredRuntime
             ? { name: 'WorkerRunTimeout', message: '任务运行超过时限，已释放以便队列继续' }
             : { name: 'WorkerLeaseExpired', message: '后台进程中断，任务租约已过期' };
           // Keep attempt_count and the attempt row. A lease interrupt adds one
-          // max_attempts for translation and hourly extract so a restart can resume.
+          // max_attempts for translation, and at most one for hourly extract.
           const attemptCount = row.attempt_count;
-          const maxAttempts = leaseInterrupted ? Number(row.max_attempts) + 1 : row.max_attempts;
+          let priority = Number(row.priority) || 0;
+          let hourStart = null;
+          if (hourlyExtract) {
+            const input = parseJson(row.input_json);
+            const start = Number(input?.hourStart);
+            if (Number.isFinite(start)) hourStart = start;
+            if (retry && hourStart != null) {
+              const latest = Math.floor(Number(now) / 3_600_000) * 3_600_000 - 3_600_000;
+              if (hourStart < latest && priority >= 0) priority = -5;
+            }
+          }
           const delay = row.type === 'feed.translation.run' && !leaseInterrupted ? translationRetryDelayMs(row.attempt_count) : 0;
           const availableAt = retry ? observedAt + delay : row.available_at;
           database.prepare(`UPDATE jobs SET status = ?, error_json = ?, available_at = ?, completed_at = ?,
-            attempt_count = ?, max_attempts = ?, locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
-            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, attemptCount, maxAttempts, observedAt, row.id);
+            attempt_count = ?, max_attempts = ?, priority = ?, locked_by = NULL, locked_at = NULL, updated_at = ? WHERE id = ?`)
+            .run(status, JSON.stringify(error), availableAt, retry ? null : observedAt, attemptCount, maxAttempts, priority, observedAt, row.id);
           database.prepare(`UPDATE job_attempts SET status = 'abandoned', error_json = ?, completed_at = ?
             WHERE job_id = ? AND attempt_number = ? AND status = 'running'`)
             .run(JSON.stringify(error), observedAt, row.id, row.attempt_count);
           insertEvent(retry ? 'job.recovered' : 'job.failed', 'job', row.id,
             { jobId: row.id, error }, row.workspace_id);
+          released.push({
+            id: row.id,
+            type: row.type,
+            status,
+            errorName: error.name,
+            hourStart,
+            priority,
+          });
           if (row.type === 'feed.translation.run' && !leaseInterrupted) {
             const input = parseJson(row.input_json);
             repositories.feed.noteTranslationFailure?.({
@@ -870,6 +901,11 @@ export function createStore(databasePath) {
           }
         }
       })();
+      if (typeof options.onRelease === 'function') {
+        for (const info of released) {
+          try { options.onRelease(info); } catch { /* 释放已经落库，日志失败不再把任务留在 running。 */ }
+        }
+      }
       return rows.length;
     },
 

@@ -421,7 +421,7 @@ test('hourly category flag off keeps the tree hour and does not call Flash', asy
     hourlyCategory: { async generateHour(input) { order.push('category'); categoryCalls.push(input); return { id: `hcat:${input.hourStart}`, status: 'ready' }; } },
     env: { AI_CENTER_HOURLY_CATEGORY: '1' },
   })[REPORT_HOURLY_JOB_TYPE]({ workspaceId: 'local', hourStart: hour }, {});
-  assert.deepEqual(order, ['tree', 'reading', 'category']);
+  assert.deepEqual(order, ['category', 'tree', 'reading']);
   assert.deepEqual(categoryCalls, [{ workspaceId: 'local', hourStart: hour }]);
   assert.deepEqual(on.categoryEditionIds, [`hcat:${hour}`]);
 

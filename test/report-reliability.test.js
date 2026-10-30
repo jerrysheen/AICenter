@@ -352,7 +352,7 @@ test('a lease interrupt requeues hourly extract and a runtime cap does not refun
     const refunded = store.getJob(job.id);
     assert.equal(refunded.status, 'queued');
     assert.equal(refunded.attemptCount, 2);
-    assert.equal(refunded.maxAttempts, 4);
+    assert.equal(refunded.maxAttempts, 3);
     assert.equal(refunded.error.name, 'WorkerLeaseExpired');
     const running = store.claimNextJob('worker-3', ['report.hourly.extract']);
     assert.equal(running.id, job.id);
@@ -363,7 +363,7 @@ test('a lease interrupt requeues hourly extract and a runtime cap does not refun
     const failed = store.getJob(job.id);
     assert.equal(failed.status, 'failed');
     assert.equal(failed.error.name, 'WorkerRunTimeout');
-    assert.equal(failed.maxAttempts, 4);
+    assert.equal(failed.maxAttempts, 3);
   } finally {
     store.close();
   }

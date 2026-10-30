@@ -84,7 +84,7 @@ import {informationTreeManifest,createInformationTreeJobHandlers,enqueueTreePrep
 import {createReadingHourService, readingHourSourceAccess} from '../../../packages/domain/src/reading-hour-service.js';
 import {createHourlyCategoryService, hourlyCategoryEnabled} from '../../../packages/domain/src/hourly-category.js';
 import {createModelUsageService} from '../../../packages/domain/src/model-usage-service.js';
-import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyNoCatchup, hourlyReportDisabled, releaseOpenHourlyJobs, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
+import { allowHourlyScheduleEnqueue, createReportJobHandlers, ensureDailyReportCatchupSchedule, ensureDailyReportSchedule, ensureHourlyDigestSchedule, ensureHourlyFailureCatchupSchedule, hourlyNoCatchup, hourlyReportDisabled, logHourlyExtractRelease, releaseOpenHourlyJobs, releaseStaleHourlyQueue, reportDailyManifest } from '../../../packages/runtime/src/report-module.js';
 import { boundedInt } from '../../../packages/domain/src/report-reliability.js';
 import { createResearchRecallJobHandlers, researchRecallManifest } from '../../../packages/runtime/src/research-recall-module.js';
 import { createResearchRelevanceJudge, createResearchTagJudge } from '../../../packages/runtime/src/research-judges.js';
@@ -243,6 +243,7 @@ export function createAiCenterWorker(options = {}) {
     maxRunningMs: jobMaxRunningMs,
     maxRunningMsByType,
     ownerStale: (lockedBy) => deadLocalWorkerLock(lockedBy),
+    onRelease: logHourlyExtractRelease,
   });
   startupStep('recover-stale');
   try {
@@ -257,6 +258,7 @@ export function createAiCenterWorker(options = {}) {
   } else if (hourlyNoCatchup(env)) {
     console.log('[worker] 小时失败补跑已停。report.hourly.default 仍按整点运行。恢复补跑：AI_CENTER_HOURLY_NO_CATCHUP=0 后重启 Worker');
   }
+  if (!hourlyReportDisabled(env)) releaseStaleHourlyQueue(store, Date.now(), {env});
   startupStep('hourly-jobs');
   store.abandonRunningJobs?.([MEDIA_ENRICH_JOB_TYPE], 'Worker 已重启，未完成的正文任务需按保存状态继续');
   startupStep('abandon-media');
@@ -989,6 +991,7 @@ export function createAiCenterWorker(options = {}) {
     pollIntervalMs: options.schedulePollIntervalMs || env.AI_CENTER_SCHEDULER_POLL_MS || 20_000,
     beforeEnqueue(schedule, at) {
       if (!allowHourlyScheduleEnqueue(schedule, env)) return false;
+      if (schedule.key === 'report.hourly.default') releaseStaleHourlyQueue(store, at, {env});
       if (schedule.jobType === TWKR_NEWS_JOB_TYPE || schedule.jobType === TWKR_REVENUE_JOB_TYPE) {
         return prepareTwkrEnqueue(store, schedule);
       }
@@ -1018,6 +1021,7 @@ export function createAiCenterWorker(options = {}) {
       env.AI_CENTER_TRANSLATION_BACKFILL_CONCURRENCY,
       Number(env.AI_CENTER_WORKER_TRANSLATION_CONCURRENCY || 5),
     ),
+    onRelease: logHourlyExtractRelease,
     onError(error, job) {
       const stack = error instanceof Error ? error.stack : '';
       console.error(`[worker] ${job.type} ${job.id}: ${stack || error?.message || error}`);
