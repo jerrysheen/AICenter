@@ -12,6 +12,7 @@ import {
   PatchUserItemStateInputSchema,
 } from '../../../contracts/src/index.js';
 import { preferNativeId } from '../../../domain/src/authors.js';
+import { localizationItemId } from '../../../domain/src/localize-texts.js';
 import { escapeFts5MatchQuery } from '../fts-query.js';
 import {
   feedSearchIndexStatus as readFeedSearchIndexStatus,
@@ -34,6 +35,25 @@ function parseJson(value, fallback = {}) {
 
 function sourceHash(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+function hanCount(value) {
+  return (String(value || '').match(/\p{Script=Han}/gu) || []).length;
+}
+
+function bestZhTranslation(texts) {
+  let best = '';
+  let score = 0;
+  for (const text of texts) {
+    const value = String(text || '').trim();
+    const han = hanCount(value);
+    if (!han) continue;
+    if (han > score || (han === score && value.length > best.length)) {
+      score = han;
+      best = value;
+    }
+  }
+  return best;
 }
 
 function publicTranslationError(error) {
@@ -2030,10 +2050,45 @@ export function createFeedRepository(database, emitEvent) {
       for (let index = 0; index < wanted.length; index += 200) {
         const chunk = wanted.slice(index, index + 200);
         const marks = chunk.map(() => '?').join(', ');
-        rows.push(...database.prepare(`SELECT id, title, substr(coalesce(summary, ''), 1, 400) AS excerpt
-          FROM content_items WHERE workspace_id = ? AND id IN (${marks})`).all(workspaceId, ...chunk));
+        rows.push(...database.prepare(`SELECT ci.id, ci.title, substr(coalesce(ci.summary, ''), 1, 400) AS excerpt,
+            c.provider AS provider, c.external_id AS external_id
+          FROM content_items ci
+          LEFT JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
+          WHERE ci.workspace_id = ? AND ci.id IN (${marks})`).all(workspaceId, ...chunk));
       }
-      return rows.map((row) => ({ id: `feed:${row.id}`, title: row.title || '', excerpt: row.excerpt || '' }));
+      const aliases = new Map();
+      const lookup = [];
+      for (const row of rows) {
+        const keys = [row.id];
+        if (row.provider && row.external_id) keys.push(`${row.provider}:${row.external_id}`);
+        const loc = localizationItemId(keys[1] || row.id);
+        if (loc && !keys.includes(loc)) keys.push(loc);
+        aliases.set(row.id, keys);
+        lookup.push(...keys);
+      }
+      const translated = new Map();
+      const unique = [...new Set(lookup)];
+      for (let index = 0; index < unique.length; index += 200) {
+        const chunk = unique.slice(index, index + 200);
+        const marks = chunk.map(() => '?').join(', ');
+        const found = database.prepare(`SELECT item_id, substr(translated_text, 1, 600) AS translated_text
+          FROM feed_item_translations
+          WHERE workspace_id = ? AND target_lang = 'zh' AND translated_text != '' AND item_id IN (${marks})`)
+          .all(workspaceId, ...chunk);
+        for (const hit of found) {
+          const prev = translated.get(hit.item_id) || '';
+          const next = hit.translated_text || '';
+          if (hanCount(next) > hanCount(prev) || (hanCount(next) === hanCount(prev) && next.length > prev.length)) {
+            translated.set(hit.item_id, next);
+          }
+        }
+      }
+      return rows.map((row) => ({
+        id: `feed:${row.id}`,
+        title: row.title || '',
+        excerpt: row.excerpt || '',
+        translation: bestZhTranslation((aliases.get(row.id) || []).map((key) => translated.get(key))),
+      }));
     },
 
     listLegacyProviderItems(workspaceId,provider) {

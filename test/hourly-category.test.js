@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createStore } from '../packages/database/src/index.js';
 import { treeCatalog } from '../packages/domain/src/information-tree-policy.js';
@@ -110,6 +111,39 @@ test('category brief output rejects sourceIds outside the input', () => {
   assert.equal(covered.truncated, false);
 });
 
+function clippedIngestTitle(lead) {
+  return `${lead.slice(0, 48)}…`;
+}
+
+test('clipped ingest titles are not the final bullet when a Chinese translation or fuller excerpt exists', () => {
+  const lead = 'NVIDIA reported data-center revenue that beat every public estimate this quarter';
+  const title = clippedIngestTitle(lead);
+  assert.equal(title.endsWith('…'), true);
+  assert.equal(title.length, 49);
+  const fuller = coverCategoryEvents([], [
+    { sourceId: 'feed:1', title, originalTitle: title, excerpt: lead },
+  ]);
+  assert.notEqual(fuller.events[0].bullet, title);
+  assert.equal(fuller.events[0].bullet.endsWith('…'), false);
+  assert.equal(fuller.events[0].bullet, lead);
+  const translated = coverCategoryEvents(
+    [{ bullet: title, sourceIds: ['feed:1'] }, { bullet: 'Two English headlines were merged into one line.', sourceIds: ['feed:2', 'feed:3'] }],
+    [
+      { sourceId: 'feed:1', title, originalTitle: title, excerpt: lead, translation: '英伟达数据中心收入超过了公开预期。' },
+      { sourceId: 'feed:2', title, originalTitle: title, excerpt: lead, translation: '第一条中文。' },
+      { sourceId: 'feed:3', title, originalTitle: title, excerpt: lead, translation: '第二条中文。' },
+    ],
+  );
+  assert.equal(translated.events[0].bullet, '英伟达数据中心收入超过了公开预期。');
+  assert.match(translated.events[1].bullet, /第一条中文/);
+  assert.match(translated.events[1].bullet, /第二条中文/);
+  const kept = coverCategoryEvents(
+    [{ bullet: '模型写成的中文。', sourceIds: ['feed:1'] }],
+    [{ sourceId: 'feed:1', title, originalTitle: title, excerpt: lead, translation: '英伟达数据中心收入超过了公开预期。' }],
+  );
+  assert.equal(kept.events[0].bullet, '模型写成的中文。');
+});
+
 test('a tree tag is kept when resource taggings are empty, and Flash does not drop the other tag', async () => {
   const store = createStore(':memory:');
   try {
@@ -149,6 +183,106 @@ test('a tree tag is kept when resource taggings are empty, and Flash does not dr
     assert.equal(ai.inputCount, 1);
     assert.ok(ai.events.flatMap((event) => event.sourceIds).includes('feed:both'));
     assert.equal(calls.length, 3);
+  } finally { store.close(); }
+});
+
+test('untagged fill uses stored gemma Chinese and does not keep a clipped English title', async () => {
+  const store = createStore(':memory:');
+  try {
+    const feed = store.repositories.feed;
+    const source = feed.upsertSourceAccount({
+      workspaceId: 'local', provider: 'x', externalId: 'x:home', displayName: 'X',
+    });
+    const lead = 'Market desk note about rates and liquidity in the funding market this hour';
+    const title = clippedIngestTitle(lead);
+    const saved = [];
+    for (let index = 0; index < 9; index += 1) {
+      const externalId = `tweet-${index}`;
+      const capture = feed.saveCapture({
+        workspaceId: 'local', provider: 'x', externalId, sourceAccountId: source.id,
+        sourceUrl: `https://x.com/example/status/${externalId}`,
+        contentHash: createHash('sha256').update(externalId).digest('hex'),
+        capturedAt: hour + index + 1,
+      });
+      const item = feed.saveContentItem({
+        workspaceId: 'local', captureId: capture.id, originType: 'subscription', contentType: 'post',
+        title, body: lead, summary: lead,
+        sourceUrl: `https://x.com/example/status/${externalId}`,
+        authorName: 'Desk', publishedAt: hour + index + 1,
+      });
+      const translation = `第${index + 1}条：资金市场流动性有变化。`;
+      feed.saveTranslations([{
+        workspaceId: 'local',
+        itemId: index === 8 ? item.id : `x:${externalId}`,
+        targetLang: 'zh',
+        sourceHash: createHash('sha256').update(`${lead}:${index}`).digest('hex'),
+        translatedText: index === 0 ? `Still an English note about ${lead}` : translation,
+        engine: 'gemma',
+      }]);
+      if (index === 0) {
+        feed.saveTranslations([{
+          workspaceId: 'local',
+          itemId: item.id,
+          targetLang: 'zh',
+          sourceHash: createHash('sha256').update(`${lead}:zh`).digest('hex'),
+          translatedText: translation,
+          engine: 'gemma',
+        }]);
+      }
+      saved.push({ id: item.id, externalId, translation, eventAt: hour + index + 1 });
+    }
+    const looked = feed.listHourlyCategoryTexts('local', saved.map((row) => row.id));
+    assert.equal(looked.length, 9);
+    assert.equal(looked.every((row) => row.title === title), true);
+    assert.match(looked.find((row) => row.id === `feed:${saved[0].id}`).translation, /第1条/);
+    assert.match(looked.find((row) => row.id === `feed:${saved[8].id}`).translation, /第9条/);
+    const calls = [];
+    const service = createHourlyCategoryService({
+      repository: store.repositories.hourlyCategory,
+      candidatePort: async () => saved.map((row) => ({ id: `feed:${row.id}`, title, eventAt: row.eventAt })),
+      excerptPort(workspaceId, candidates) {
+        const ids = candidates.filter((row) => String(row.id || '').startsWith('feed:')).map((row) => row.id.slice(5));
+        return feed.listHourlyCategoryTexts(workspaceId, ids);
+      },
+      catalog,
+      now: () => hour + HOUR + 5,
+      agentRuntime: {
+        async run(input) {
+          calls.push(input);
+          const payload = JSON.parse(input.message);
+          return {
+            answer: JSON.stringify({
+              categoryId: payload.category.id,
+              events: [{ bullet: 'OpenAI released a clipped English title that should not ship', sourceIds: [payload.items[0].sourceId] }],
+            }),
+            model: 'gemini-3.1-flash-lite',
+          };
+        },
+      },
+      log() {},
+    });
+    const edition = await service.generateHour({ workspaceId: 'local', hourStart: hour });
+    assert.equal(calls.length, 1);
+    const payload = JSON.parse(calls[0].message);
+    assert.equal(payload.category.id, '__untagged__');
+    assert.equal(payload.items.length, 8);
+    assert.equal(payload.truncated, true);
+    assert.equal(payload.eventLimit, 8);
+    assert.equal(payload.items.some((row) => row.sourceId === `feed:${saved[8].id}`), false);
+    assert.equal(payload.items.every((row) => row.title.startsWith('第') && !row.title.endsWith('…')), true);
+    assert.equal(calls[0].message.includes(title), false);
+    assert.equal(calls[0].message.includes(lead), false);
+    const untagged = edition.categories.find((category) => category.id === '__untagged__');
+    assert.deepEqual(untagged.events.flatMap((event) => event.sourceIds).sort(), saved.map((row) => `feed:${row.id}`).sort());
+    for (const event of untagged.events) {
+      assert.equal(event.bullet.endsWith('…'), false);
+      assert.equal(event.bullet === title, false);
+      assert.match(event.bullet, /第\d+条/);
+    }
+    const first = untagged.events.find((event) => event.sourceIds.includes(`feed:${saved[0].id}`));
+    const last = untagged.events.find((event) => event.sourceIds.includes(`feed:${saved[8].id}`));
+    assert.equal(first.bullet, saved[0].translation);
+    assert.equal(last.bullet, saved[8].translation);
   } finally { store.close(); }
 });
 

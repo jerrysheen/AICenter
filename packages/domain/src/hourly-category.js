@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { HOURLY_CATEGORY_EVENT_MAX, HOURLY_CATEGORY_FORMAT, UNTAGGED_CATEGORY_ID } from '../../contracts/src/hourly-category.js';
-import { localizationItemId } from './localize-texts.js';
+import { localizationItemId, needsZhLocalization } from './localize-texts.js';
 import { treeCatalog } from './information-tree-policy.js';
 
 export const HOURLY_CATEGORY_TASK = 'hourly-category-brief';
@@ -18,8 +18,8 @@ export const HOURLY_CATEGORY_INSTRUCTION = [
   '返回一个 JSON 对象，不要 Markdown。形状必须是 {"categoryId":"...","events":[{"bullet":"...","sourceIds":["..."]}]}。',
   'categoryId 必须与输入 category.id 相同。每条 sourceIds 只能使用输入 items 里的 sourceId，且至少包含一个。',
   '同一件事才合并成一条，合并后的 sourceIds 写上全部相关材料。不要为了缩短丢掉不同的事。',
-  '正式分类最多 12 条。输入里若有 eventLimit，事件条数不超过它。bullet 用一句简体中文，不要重写标题、摘要和正文。',
-  '没有写进事件的材料由系统按标题补上。输入 truncated 为 true 时，先覆盖已经给出的条目。',
+  '正式分类最多 12 条。输入里若有 eventLimit，事件条数不超过它。bullet 用一句简体中文，不要重写标题、摘要和正文。输入已经是中文时沿用这句，不要改回英文，也不要写成以省略号收尾的半截标题。',
+  '没有写进事件的材料由系统补上：已有中文译文时用译文，不用入库时截断的原题。输入 truncated 为 true 时，先覆盖已经给出的条目。',
 ].join('\n');
 
 export const HOURLY_CATEGORY_PROMPT_HASH = createHash('sha256').update(HOURLY_CATEGORY_INSTRUCTION).digest('hex');
@@ -96,10 +96,16 @@ export function bucketCategoryItems(items, catalog) {
   for (const item of items || []) {
     const sourceId = String(item?.sourceId || item?.id || '').trim();
     if (!sourceId) continue;
+    const originalTitle = String(item?.originalTitle || item?.title || '');
+    const translation = String(item?.translation || item?.translatedText || '');
+    const excerpt = String(item?.excerpt || item?.summary || '');
+    const copy = categoryModelCopy({ title: item?.title, excerpt, translation, originalTitle });
     const row = {
       sourceId,
-      title: clipCategoryText(item?.title, CATEGORY_TITLE_CHARS),
-      excerpt: clipCategoryText(item?.excerpt || item?.summary || item?.title, CATEGORY_EXCERPT_CHARS),
+      title: copy.title,
+      excerpt: copy.excerpt,
+      originalTitle,
+      translation,
       tags: (Array.isArray(item?.tags) ? item.tags : []).map((tag) => String(tag || '').trim()).filter(Boolean),
       eventAt: Number(item?.eventAt) || 0,
     };
@@ -284,7 +290,125 @@ async function tagsBySource(taggingRepository, workspaceId, candidates) {
   return map;
 }
 
+const ELLIPSIS_END = /(?:…|\.{3})\s*$/u;
+const BULLET_MAX = 400;
+
+function normalizeSpace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function usableZh(value) {
+  const text = normalizeSpace(value);
+  if (!text || needsZhLocalization(text) || !/\p{Script=Han}/u.test(text)) return '';
+  return text;
+}
+
+function stripEllipsis(value) {
+  return normalizeSpace(value).replace(ELLIPSIS_END, '').trim();
+}
+
+// X and Xueqiu store lead.slice(0, 48) + '…'. A title that ends in an ellipsis
+// and is only a prefix of a longer summary or translation is the same kind of clip.
+export function isStoredTitleClip(title, ...fuller) {
+  const value = normalizeSpace(title);
+  if (!ELLIPSIS_END.test(value)) return false;
+  const stem = stripEllipsis(value);
+  if (!stem) return true;
+  if (stem.length === 48) return true;
+  const longer = fuller.map(normalizeSpace).filter((text) => text.length > stem.length && text.startsWith(stem));
+  if (longer.length) return true;
+  return stem.length >= 48 && !usableZh(value);
+}
+
+function finishedPlain(value) {
+  const text = normalizeSpace(value);
+  if (!text) return '';
+  const base = stripEllipsis(text);
+  const match = base.match(/^.+?(?:[。！？]|[.!?](?:\s|$))/);
+  const sentence = (match?.[0] || base).trim();
+  return sentence || base;
+}
+
+function finishedZh(value) {
+  const sentence = finishedPlain(value);
+  if (!usableZh(sentence) || isStoredTitleClip(sentence, value)) return '';
+  return sentence;
+}
+
+function boundBullet(value) {
+  const text = normalizeSpace(value);
+  if (!text) return '';
+  if (text.length <= BULLET_MAX) return text;
+  const cut = text.slice(0, BULLET_MAX);
+  const punct = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'), cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('?'));
+  if (punct >= 24) return cut.slice(0, punct + 1).trim();
+  return cut.trim();
+}
+
+export function categoryFallbackBullet(item) {
+  const stored = normalizeSpace(item?.originalTitle || item?.title);
+  const title = normalizeSpace(item?.title);
+  const excerpt = normalizeSpace(item?.excerpt || item?.summary);
+  const translation = normalizeSpace(item?.translation || item?.translatedText);
+  const clip = isStoredTitleClip(stored, excerpt, translation, title);
+  const translationZh = finishedZh(translation);
+  const titleZh = !isStoredTitleClip(title, excerpt, translation) ? finishedZh(title) : '';
+  const storedZh = !clip ? finishedZh(stored) : '';
+  const excerptZh = finishedZh(excerpt);
+  if (translationZh && (clip || !storedZh || needsZhLocalization(stored))) return boundBullet(translationZh);
+  if (titleZh) return boundBullet(titleZh);
+  if (storedZh) return boundBullet(storedZh);
+  if (excerptZh) return boundBullet(excerptZh);
+  if (clip) {
+    const stem = stripEllipsis(stored);
+    const fuller = [excerpt, translation, title].map(normalizeSpace).find((text) => stripEllipsis(text).length > stem.length);
+    const chosen = stripEllipsis(finishedPlain(fuller) || fuller || stem);
+    if (chosen) return boundBullet(chosen);
+  }
+  const plain = stripEllipsis(finishedPlain(stored) || finishedPlain(excerpt) || stored || excerpt);
+  return boundBullet(plain) || '这条材料没有标题';
+}
+
+export function categoryModelCopy(item) {
+  const bullet = categoryFallbackBullet(item);
+  const translation = normalizeSpace(item?.translation || item?.translatedText);
+  const excerpt = normalizeSpace(item?.excerpt || item?.summary);
+  const extra = usableZh(translation) || usableZh(excerpt) || excerpt || bullet;
+  return {
+    title: clipCategoryText(bullet, CATEGORY_TITLE_CHARS),
+    excerpt: clipCategoryText(extra, CATEGORY_EXCERPT_CHARS),
+  };
+}
+
+function echoesStoredClip(raw, item) {
+  const text = normalizeSpace(raw);
+  const stored = normalizeSpace(item?.originalTitle || item?.title);
+  if (!text || !stored || !isStoredTitleClip(stored, item?.excerpt, item?.translation, item?.summary, item?.title)) return false;
+  return text === stored || text === clipCategoryText(stored, 180) || text === clipCategoryText(stored, BULLET_MAX);
+}
+
+function settleEventBullet(event, byId) {
+  const sources = (event?.sourceIds || []).map((id) => byId.get(String(id || ''))).filter(Boolean);
+  const raw = normalizeSpace(event?.bullet);
+  if (raw && usableZh(raw) && !sources.some((item) => echoesStoredClip(raw, item))) {
+    return raw.length > BULLET_MAX ? clipCategoryText(raw, BULLET_MAX) : raw;
+  }
+  const preferred = sources.map((item) => categoryFallbackBullet(item)).filter(Boolean);
+  const zh = [...new Set(preferred.filter((text) => usableZh(text)))];
+  if (zh.length === 1) return zh[0];
+  if (zh.length > 1) {
+    const joined = zh.join('；');
+    return joined.length <= BULLET_MAX ? joined : clipCategoryText(joined, BULLET_MAX);
+  }
+  if (sources.length === 1) return preferred[0] || raw || '这条材料没有标题';
+  if (raw && !sources.some((item) => raw === normalizeSpace(item?.originalTitle || item?.title))) {
+    return raw.length > BULLET_MAX ? clipCategoryText(raw, BULLET_MAX) : raw;
+  }
+  return preferred[0] || raw || '这条材料没有标题';
+}
+
 export function coverCategoryEvents(events, items, limit = CATEGORY_EVENT_STORE_LIMIT) {
+  const byId = new Map((items || []).filter((item) => item?.sourceId).map((item) => [String(item.sourceId), item]));
   const cited = new Set();
   const kept = [];
   let truncated = false;
@@ -297,13 +421,13 @@ export function coverCategoryEvents(events, items, limit = CATEGORY_EVENT_STORE_
       ids.push(sourceId);
     }
     if (!ids.length) continue;
-    kept.push({ bullet: event.bullet, sourceIds: ids });
+    kept.push({ bullet: settleEventBullet({ ...event, sourceIds: ids }, byId), sourceIds: ids });
   }
   for (const item of items || []) {
     const sourceId = String(item?.sourceId || '');
     if (!sourceId || cited.has(sourceId)) continue;
     if (kept.length >= limit) { truncated = true; break; }
-    const bullet = clipCategoryText(item?.title || item?.excerpt, 180) || '这条材料没有标题';
+    const bullet = categoryFallbackBullet(item) || '这条材料没有标题';
     kept.push({ bullet, sourceIds: [sourceId] });
     cited.add(sourceId);
   }
@@ -436,10 +560,14 @@ export function createHourlyCategoryService({
       for (const id of nodeTags.get(row.id) || []) {
         if (id && !tags.includes(id)) tags.push(id);
       }
+      const storedTitle = looked?.title || row.title || '';
+      const storedExcerpt = looked?.excerpt || row.excerpt || row.summary || '';
       return {
         sourceId: row.id,
-        title: looked?.title || row.title || '',
-        excerpt: looked?.excerpt || row.excerpt || row.summary || row.title || '',
+        title: storedTitle,
+        excerpt: storedExcerpt || storedTitle,
+        originalTitle: storedTitle,
+        translation: looked?.translation || row.translation || '',
         tags,
         eventAt: Number(row.eventAt) || 0,
       };
