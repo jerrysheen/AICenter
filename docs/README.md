@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-30-hourly-category-zh-bullets.md`：类目小时进刊优先用 `feed_item_translations` 里已有的中文。入库时截成约 48 字并以「…」结尾的原题不再直接当 bullet。待标注没送进模型的条目走同一条补齐。不增加 Flash 次数，不打开失败补跑。不新增 migration。只需要重启 Worker。已经落库的刊期不自动重写。
+
 - `progress/2026-10-28-hourly-companion-cards.md`：类目小时手机页改成陪伴感轻卡片。开场淡色导语，每个方向一张浅底卡片，条数是蓝色 chip，「原文」贴在句末。待归类排到末尾，写成「还没归类 · N」，默认折起。信息树摘要改成「展开看信息树这一小时」。不改多标签进桶和 Flash。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
 
 - `progress/2026-10-28-podcast-compile-batches.md`：默认事点统编不再一次把整集事点交给 Flash。按块分段写成带 `##` 的正文，再拼成一篇。提示词要求留下数字、公司、因果、风险和时间，不设成稿字数门槛。统编失败仍降级为切章拼接。`flash-polish` 和整集字幕一次成稿不上这条路径。已 `ready` 的稿不自动重写。不新增 migration。只需要重启 Worker。
