@@ -8,11 +8,12 @@ const H = 3600000;
 const start = 10 * H;
 const secret = 'AIzaSyDUMMYKEY1234567890';
 
-function handlersFor(informationService, treeService = {async generateDaily() { throw new Error('日报不应在小时测试里运行'); }}) {
+function handlersFor(informationService, treeService = {async generateDaily() { throw new Error('日报不应在小时测试里运行'); }}, env = {}) {
   return createReportJobHandlers({
     reportService: {async generateDailyReport() { throw new Error('旧日报不应运行'); }},
     informationService,
     treeService,
+    env,
   });
 }
 
@@ -54,7 +55,7 @@ test('hourly extract failure stores kind, code, and a redacted message on the jo
       }];
     }});
     const job = await runJob(store, handlers, REPORT_HOURLY_JOB_TYPE, {hourStart: start}, 2);
-    assert.equal(job.status, 'queued');
+    assert.equal(job.status, 'failed');
     assert.equal(job.attemptCount, 1);
     assert.equal(job.error.kind, 'model-5xx');
     assert.equal(job.error.code, '500');

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-30-hourly-extract-backlog.md`：`report.hourly.extract` 超时或失败后释放 running，旧整点不再堵住后面的小时。失败补跑仍关闭。整点在补跑关闭时只跑刚结束的那一小时，类目刊期写在信息树之前。不新增 migration。只需要重启 Worker。
+
 - `progress/2026-10-30-hourly-category-zh-bullets.md`：类目小时进刊优先用 `feed_item_translations` 里已有的中文。入库时截成约 48 字并以「…」结尾的原题不再直接当 bullet。待标注没送进模型的条目走同一条补齐。不增加 Flash 次数，不打开失败补跑。不新增 migration。只需要重启 Worker。已经落库的刊期不自动重写。
 
 - `progress/2026-10-28-hourly-companion-cards.md`：类目小时手机页改成陪伴感轻卡片。开场淡色导语，每个方向一张浅底卡片，条数是蓝色 chip，「原文」贴在句末。待归类排到末尾，写成「还没归类 · N」，默认折起。信息树摘要改成「展开看信息树这一小时」。不改多标签进桶和 Flash。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。

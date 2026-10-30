@@ -159,17 +159,62 @@ export function hourlyFailureCatchupLimit(env = process.env) {
 }
 
 export function hourlyRunningSameVersion(jobs, current = {}) {
-  const hour = current.hourStart;
+  const hour = Number(current.hourStart);
   const workspace = current.workspaceId || 'local';
+  const currentHasHour = Number.isFinite(hour);
   return (jobs || []).some((job) => {
     if (job?.type && job.type !== REPORT_HOURLY_JOB_TYPE) return false;
     if (job?.status && job.status !== 'running') return false;
     if (current.id && job?.id === current.id) return false;
     if ((job?.workspaceId || 'local') !== workspace) return false;
-    const other = job?.input?.hourStart;
-    if (!Number.isFinite(Number(hour)) || !Number.isFinite(Number(other))) return true;
-    return Number(other) === Number(hour);
+    const other = Number(job?.input?.hourStart);
+    const otherHasHour = Number.isFinite(other);
+    // A scheduled run has no hour. It overlaps only another scheduled run.
+    // A concrete hour overlaps only that same hour, so a backfill lane cannot
+    // burn the next clock hour as already-running.
+    if (currentHasHour && otherHasHour) return other === hour;
+    return !currentHasHour && !otherHasHour;
   });
+}
+
+export function logHourlyExtractRelease(info) {
+  if (info?.type !== REPORT_HOURLY_JOB_TYPE) return;
+  const hourStart = Number(info.hourStart);
+  const priority = Number(info.priority);
+  console.log(`[worker] hourly-extract released id=${info.id || '-'} hourStart=${Number.isFinite(hourStart) ? hourStart : '-'} status=${info.status || '-'} error=${info.errorName || '-'} priority=${Number.isFinite(priority) ? priority : '-'}`);
+}
+
+// Drop queued clock-hour jobs that are more than an hour old, and move an old
+// explicit hour off the foreground lane. The failure-catchup schedule is not
+// touched. A priority -1 retry lane job stays where it is.
+export function releaseStaleHourlyQueue(store, now = Date.now(), {env = process.env} = {}) {
+  if (hourlyReportDisabled(env) || !store?.listOpenJobs) return {cancelled: 0, demoted: 0};
+  const at = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const latest = Math.floor(at / HOUR_MS) * HOUR_MS - HOUR_MS;
+  const open = (store.listOpenJobs(REPORT_HOURLY_JOB_TYPE) || []).filter((job) => job?.status === 'queued');
+  let cancelled = 0;
+  let demoted = 0;
+  for (const job of open) {
+    const hourStart = Number(job.input?.hourStart);
+    const scheduled = job.input?.scheduleKey === 'report.hourly.default' && !Number.isFinite(hourStart);
+    if (scheduled) {
+      const scheduledFor = Number(job.input?.scheduledFor);
+      if (Number.isFinite(scheduledFor) && scheduledFor > at - HOUR_MS) continue;
+      if (store.cancelJob?.(job.id, {status: 'skipped', reason: 'superseded-by-newer-hour'}, at)) cancelled += 1;
+      continue;
+    }
+    if (!Number.isFinite(hourStart) || hourStart >= latest || Number(job.priority) < 0 || !store.reprioritizeQueuedJobs) continue;
+    const changed = store.reprioritizeQueuedJobs(job.workspaceId || 'local', [{
+      id: job.id,
+      priority: -5,
+      expectedPriority: Number(job.priority),
+    }]);
+    if (changed?.includes(job.id)) demoted += 1;
+  }
+  if (cancelled || demoted) {
+    console.log(`[worker] hourly-extract queue cancelled=${cancelled} demoted=${demoted} latest=${latest}`);
+  }
+  return {cancelled, demoted};
 }
 
 export function hourlyOpenHourStarts(store, workspaceId = 'local') {
@@ -415,11 +460,15 @@ function readStoredTreeEdition(treeService, workspaceId, hourStart) {
 }
 
 export async function runHourlyCategoryAlongside({
-  env = process.env, hourlyCategory, workspaceId = 'local', hourStarts = [], digests = null, treeService = null, log = console.log, now = () => Date.now(),
+  env = process.env, hourlyCategory, workspaceId = 'local', hourStarts = [], digests = null, treeService = null, log = console.log, now = () => Date.now(), signal = null,
 } = {}) {
   if (!hourlyCategoryEnabled(env) || typeof hourlyCategory?.generateHour !== 'function') return [];
   const saved = [];
   for (const hourStart of hourStarts) {
+    if (signal?.aborted) {
+      log(`[worker] hourly-category aborted hourStart=${hourStart}`);
+      break;
+    }
     const startedAt = now();
     const known = treeEditionOnHand(digests, hourStart) || readStoredTreeEdition(treeService, workspaceId, hourStart);
     const tree = { treeExists: Boolean(known), treeStatus: known?.status || '' };
@@ -452,20 +501,61 @@ export function createReportJobHandlers({ reportService, briefService = null, in
       const workspaceIdEarly = input.workspaceId || 'local';
       const openHourly = context?.store?.listOpenJobs?.(REPORT_HOURLY_JOB_TYPE) || [];
       if (hourlyRunningSameVersion(openHourly, { id: context?.job?.id, workspaceId: workspaceIdEarly, hourStart: input.hourStart })) {
+        console.log(`[worker] hourly-extract skip reason=already-running hourStart=${Number.isFinite(input.hourStart) ? input.hourStart : '-'}`);
         return { status: 'skipped', reason: 'already-running' };
       }
+      const scheduledRequest = input.hourStart === undefined && !input.followUp;
+      let runInput = input;
+      if (scheduledRequest && hourlyNoCatchup(env)) {
+        const latest = Math.floor(Date.now() / HOUR_MS) * HOUR_MS - HOUR_MS;
+        if (latest >= 0) {
+          runInput = {...input, hourStart: latest};
+          console.log(`[worker] hourly-extract scope=latest hourStart=${latest} no-catchup=1`);
+        }
+      }
       await beforeHourly?.(input,context);
+      const categoryState = {editions: [], done: new Set()};
+      const categoryFields = () => (hourlyCategoryEnabled(env) ? {
+        categoryEditionIds: categoryState.editions.map((item) => item.id),
+        categoryStatus: categoryState.editions.map((item) => item.status),
+      } : {});
+      const aborted = (phase) => {
+        if (!context?.signal?.aborted) return null;
+        console.log(`[worker] hourly-extract aborted hourStart=${Number.isFinite(runInput.hourStart) ? runInput.hourStart : '-'} phase=${phase}`);
+        return {status: 'skipped', reason: 'aborted', ...categoryFields()};
+      };
+      const writeCategory = async (hourStarts, digestsForCategory) => {
+        const pending = [];
+        for (const hourStart of hourStarts || []) {
+          if (!Number.isFinite(hourStart) || categoryState.done.has(hourStart)) continue;
+          if (context?.signal?.aborted) break;
+          categoryState.done.add(hourStart);
+          pending.push(hourStart);
+        }
+        if (!pending.length) return;
+        const saved = await runHourlyCategoryAlongside({
+          env, hourlyCategory, workspaceId: workspaceIdEarly, hourStarts: pending,
+          digests: digestsForCategory, treeService, signal: context?.signal,
+        });
+        categoryState.editions.push(...saved);
+      };
+      const stopped = aborted('before-tree');
+      if (stopped) return stopped;
+      if (Number.isFinite(runInput.hourStart)) await writeCategory([runInput.hourStart], null);
+      const stoppedAfterCategory = aborted('before-tree');
+      if (stoppedAfterCategory) return stoppedAfterCategory;
       let digests;
       try {
-        digests=await informationService.generateHourlyDigests(input);
+        digests=await informationService.generateHourlyDigests(runInput);
       } catch (error) {
-        await runHourlyCategoryAlongside({
-          env, hourlyCategory, workspaceId: workspaceIdEarly,
-          hourStarts: hourlyCategoryHourStarts(input, null),
-          treeService,
-        });
+        if (!context?.signal?.aborted) await writeCategory(hourlyCategoryHourStarts(runInput, null), null);
+        const stoppedOnError = aborted('tree-error');
+        if (stoppedOnError) return stoppedOnError;
         throw error;
       }
+      const stoppedAfterTree = aborted('after-tree');
+      if (stoppedAfterTree) return stoppedAfterTree;
+      await writeCategory(hourlyCategoryHourStarts(runInput, digests), digests);
       const hourMs=3600000;
       const windows=input.hourStart!==undefined ? [{startAt:input.hourStart,endAt:input.hourStart+hourMs}] : digests.map(item=>item?.window).filter(item=>Number.isFinite(item?.startAt) && Number.isFinite(item?.endAt));
       const readingErrors=[];
@@ -485,16 +575,12 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         }
       }
       const workspaceId=input.workspaceId || 'local';
-      const categoryEditions = await runHourlyCategoryAlongside({
-        env, hourlyCategory, workspaceId,
-        hourStarts: hourlyCategoryHourStarts(input, digests),
-        digests, treeService,
-      });
-      const categoryFields = hourlyCategoryEnabled(env) ? {
-        categoryEditionIds: categoryEditions.map((item) => item.id),
-        categoryStatus: categoryEditions.map((item) => item.status),
-      } : {};
-      const followUpPlan=hourlyFollowUpPlan({requestedHour:input.hourStart,digests,deferredByStart,followUp:input.followUp});
+      const stoppedBeforeFollowUp = aborted('before-follow-up');
+      if (stoppedBeforeFollowUp) return stoppedBeforeFollowUp;
+      const requestedHour = Number.isFinite(runInput.hourStart) && (digests || []).some((item) => item?.window?.startAt === runInput.hourStart)
+        ? runInput.hourStart
+        : (Number.isFinite(input.hourStart) ? input.hourStart : digests?.[0]?.window?.startAt);
+      const followUpPlan=hourlyFollowUpPlan({requestedHour,digests,deferredByStart,followUp:input.followUp});
       if(followUpPlan && !hourlyCatchupFollowUpBlocked(env, digests, followUpPlan)) enqueueHourlyExtractFollowUp(context?.store,{workspaceId,hourStart:followUpPlan.hourStart,availableAt:Date.now()+HOURLY_FOLLOW_UP_DELAY_MS,reason:followUpPlan.reason,env});
       let prepStats={enqueued:0,prioritized:0,queued:0,running:0,missing:0};
       try {
@@ -526,20 +612,27 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         if(digests[0]?.status==='failed' && !digests[0].terminal && digests[0].groupFailures?.some(p=>p.retryable)) {
           const failures=digests[0].groupFailures;
           console.error(`[worker] 小时浓缩临时失败 groups=${failures.length} retryable=${failures.filter(p=>p.retryable).length} ${failures.map(p=>`tag=${p.tagId ?? 'null'} reason=${p.reason} queueMs=${p.queueMs ?? '-'} executionMs=${p.executionMs ?? '-'}`).join('; ')}`);
-          throw rememberReportFailure(new Error('小时浓缩临时失败；成功分类及检查点已保留'), digests[0]);
+          const failure = rememberReportFailure(new Error('小时浓缩临时失败；成功分类及检查点已保留'), digests[0]);
+          const hourStart = Number.isFinite(runInput.hourStart) ? runInput.hourStart : digests[0]?.window?.startAt;
+          if (hourlyNoCatchup(env)) {
+            failure.code = 'hourly-no-retry';
+            failure.terminal = true;
+            console.error(`[worker] hourly-extract stop-retry hourStart=${Number.isFinite(hourStart) ? hourStart : '-'} reason=retryable-failure no-catchup=1`);
+          }
+          throw failure;
         }
         const main=digests[0];
         return {snapshotIds:digests.map(d=>d.id),editionId:main?.id,status:main?.status,published:main?.published===true,
           window:main?.window,pendingCount:main?.pendingIds.length || 0,groupFailureCount:main?.groupFailures?.length || 0,
           readingFailed:readingErrors.length>0,readingErrors,classificationDeferred,
-          ...categoryFields,
+          ...categoryFields(),
           backgroundIncomplete:digests.slice(1).filter(d=>d.status!=='ready').map(d=>d.window.startAt)};
       }
       const failed=(rawInput?.hourStart!==undefined ? digests : digests.slice(0,1)).filter(d=>d.editorial?.status==='failed');
       if(failed.length) throw new Error(`${failed.length} 个小时主题整理未完成；提炼底稿已保存，可继续重试。`);
       return {snapshotIds:digests.map(d=>d.id),itemCount:digests.reduce((s,d)=>s+d.items.length,0),
         readingFailed:readingErrors.length>0,readingErrors,classificationDeferred,
-        ...categoryFields,
+        ...categoryFields(),
         backgroundIncomplete:rawInput?.hourStart===undefined ? digests.slice(1).filter(d=>d.editorial?.status==='failed').map(d=>d.window.startAt) : []};
     },
     [REPORT_DAILY_JOB_TYPE]: async (rawInput, context) => {

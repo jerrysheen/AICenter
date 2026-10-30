@@ -50,7 +50,7 @@
 
 非整点截止从已完成整小时树中按信息节点原始归属时间筛出边界输入，只在小时阶段生成精确边界模块，再交给日报；不读原文。旧节点缺少该时间字段或完整小时尚未完成时仍显示missingHours，后续正常补处理。
 
-复用注册的 `report.hourly.extract` / `report.daily.generate`、原Scheduler与JobRunner续租。最新已结束小时优先，每轮一个低优先级补处理窗口，完整窗口轮转检查晚到材料。旧日报brief任务在新模式下报告superseded，不再调用旧模型。新模式关闭旧媒体单篇brief；翻译与Tag仍独立复用。窗口仍以来源publishedAt、缺失时createdAt为归属，未改变旧记录含义；24小时之外的迟到材料用现有指定小时Job补处理，不声称事件发生于窗口。非整点日报边界缺少完整信息节点或精确时间字段时标明missingHours，绝不临时读取原文生成日报。
+复用注册的 `report.hourly.extract` / `report.daily.generate`、原Scheduler与JobRunner续租。最新已结束小时优先。`AI_CENTER_HOURLY_NO_CATCHUP` 不是 `0` 时，整点任务只处理刚结束的那一小时，不再在同一次里再打一个旧窗口；`AI_CENTER_HOURLY_NO_CATCHUP=0` 时仍每轮带一个低优先级补处理窗口，完整窗口轮转检查晚到材料。旧日报brief任务在新模式下报告superseded，不再调用旧模型。新模式关闭旧媒体单篇brief；翻译与Tag仍独立复用。窗口仍以来源publishedAt、缺失时createdAt为归属，未改变旧记录含义；24小时之外的迟到材料用现有指定小时Job补处理，不声称事件发生于窗口。非整点日报边界缺少完整信息节点或精确时间字段时标明missingHours，绝不临时读取原文生成日报。
 
 API：`GET /api/v1/reports/tree` 返回七日内的刊期与最近尝试；`/node?id=...`、`/children?id=...`按不可变版本读取。沿用配对鉴权，不生成模型任务、不抓取、不写库。页面「简报 → 三层浓缩树」复用原文阅读与主Tag目录；展开只加载直接子层。信息视图可以读取小时整理失败时已成功的信息节点。
 

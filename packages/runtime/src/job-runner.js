@@ -145,6 +145,7 @@ export function createJobRunner(options) {
       maxRunningMsByType,
       executingIds: [...inFlight.keys()],
       ownerStale: (lockedBy) => deadLocalWorkerLock(lockedBy),
+      onRelease: options.onRelease,
     });
     for (const [id, item] of [...inFlight]) {
       const current = store.getJob?.(id);
