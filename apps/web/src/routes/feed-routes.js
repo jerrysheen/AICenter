@@ -1,4 +1,5 @@
 import { FEED_TRANSLATION_TEXT_MAX, parseBilibiliImportInput, parseFlashFeedQuery, parseHideFlag, parsePatchUserItemStateInput, parsePersistFeedTranslationsInput, parsePostInput, parseTranslateBatchInput, parseTranslateInput, ValidationError } from '../../../../packages/contracts/src/index.js';
+import { semianalysisResearchStatus } from '../../../../packages/connectors/src/semianalysis-public.js';
 import { json, jsonBodyLimit, readJson } from '../http/response.js';
 import { labelEventLoop } from '../http/event-loop-blocks.js';
 import { createPreparedSlotStore } from '../http/prepared-slots.js';
@@ -86,6 +87,14 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
           error: job.status === 'failed' ? '翻译未完成，请稍后重试' : null });
       },
     },
+    {method:'GET',path:'/api/v1/feed/media/semianalysis/research',handler({response}) {
+      json(response, 200, { ok: true, research: semianalysisResearchStatus() });
+    }},
+    {method:'POST',path:'/api/v1/feed/media/manual-partial',async handler({request,response,services,identity}) {
+      if (!services.media?.saveManualPartial) throw new ValidationError('尚未启用手动公开页', ['platform']);
+      const result = await services.media.saveManualPartial(workspaceIdFrom(identity), await readJson(request));
+      json(response, 200, result);
+    }},
     {method:'GET',path:'/api/v1/feed/media/article',handler({response,services,identity,url}) {
       if(!services.media) {json(response,404,{ok:false,error:'文章不存在'});return;}
       const item=services.media.getSavedArticle(Object.fromEntries(url.searchParams),{workspaceId:workspaceIdFrom(identity)});

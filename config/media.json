@@ -1458,6 +1458,38 @@
       "detailDailyCap": null,
       "deployment": "first",
       "minRequestIntervalMs": 3000
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content"
+      ],
+      "identityParams": [],
+      "redirectHosts": [],
+      "articleHosts": [
+        "semianalysis.com",
+        "www.semianalysis.com"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "semianalysis",
+      "publisher": "SemiAnalysis",
+      "publisherKey": "semianalysis",
+      "channel": "tech",
+      "channelName": "SemiAnalysis 公开页",
+      "transport": "vendor_api",
+      "probeUrl": "https://semianalysis.com/",
+      "allowedHosts": [
+        "semianalysis.com",
+        "www.semianalysis.com"
+      ],
+      "refreshMinutes": 1440,
+      "detailDailyCap": null,
+      "deployment": "later",
+      "minRequestIntervalMs": 3000
     }
   ],
   "discoveryPublishers": [

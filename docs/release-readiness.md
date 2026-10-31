@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-31 SemiAnalysis 只收媒体页粘贴的公开 URL，正文完整度是 `partial`。不抓 Newsletter RSS，不用 `content:encoded` 当全文。401、403 和付费墙记为 `policy_skipped`。同步不发请求。Research API 未接入。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-semianalysis-manual-url.md`。
+
 2026-10-31 InferenceX 公开跑分进入独立快照，不进媒体，也不进 GPU 租金表。`GET /api/v1/availability` 不带参数；`GET /api/v1/benchmarks` 只带 `model`。缺模型、硬件、框架、精度、isl、osl、disagg、spec_method、benchmark_type、日期或原始链接的行不写库。页面上的 tokens/s 只是该条件下的观测，不是投资结论。周摘要没有接进 `#report`。`AI_CENTER_INFERENCEX_SYNC` 默认关闭。migration 98。当前 schema 是 98。下一号是 99。空号仍是 63、79、80、82。不要重建数据库。打开定时后重启 Worker；算力页要重启 Web 并再加载一次。见 `progress/2026-10-31-inferencex-snapshots.md`。
 
 2026-10-31 arXiv 用官方查询 API 按 `lastUpdatedDate` 发现 cs.DC、cs.AR、cs.CL、cs.LG。摘要进媒体索引，`contentLevel` 是 `summary_only`，HTML 全文标成 `full_text_deferred:html_preferred`。来源默认关闭。许可类 vendor_api 仍然没有凭证就不请求。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。探针变绿后再打开 `arxiv`。见 `progress/2026-10-31-arxiv-media-source.md`。

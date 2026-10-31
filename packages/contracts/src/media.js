@@ -62,7 +62,7 @@ export const MediaConfigSchema = z.object({
     minRequestIntervalMs: z.number().int().min(0).max(120_000).optional(),
     includeKeywords: z.array(z.string().trim().min(1).max(100)).max(60).optional(),
     excludeKeywords: z.array(z.string().trim().min(1).max(100)).max(60).optional(),
-  }).strict()).max(42),
+  }).strict()).max(43),
   discoveryPublishers: z.array(z.object({
     sourceKey: z.string().regex(/^[a-z0-9]+$/), publisher: z.string().min(1),
     articleHosts: z.array(z.string().min(1)).min(1), pathPrefixes: z.array(z.string().startsWith('/')).min(1),

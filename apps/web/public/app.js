@@ -5040,6 +5040,36 @@ function renderMediaToolbar() {
     for(const item of [{sourceKey:'',publisher:'全部来源'},...state.mediaSources]) {const option=document.createElement('option');option.value=item.sourceKey;option.textContent=item.publisher;option.selected=state.mediaSourceKey===item.sourceKey;source.append(option);}
     source.addEventListener('change',()=>{state.mediaSourceKey=source.value;resetFeedWindow();loadMediaFeed().catch(e=>showToast(e.message));});controls.append(source);
     const views=document.createElement('div');renderChipTabs(views,[{id:'all',label:'全部内容'},{id:'full',label:'全文'},{id:'index',label:'简介与索引'}],state.mediaView,id=>{state.mediaView=id;resetFeedWindow();loadMediaFeed().catch(e=>showToast(e.message));});controls.append(views);
+    let semiForm=document.getElementById('semianalysis-import-form');
+    if(!semiForm){
+      semiForm=document.createElement('form');
+      semiForm.id='semianalysis-import-form';
+      semiForm.className='follow-toolbar';
+      const label=document.createElement('p');
+      label.textContent='粘贴 SemiAnalysis 公开文章 URL。只保存公开导语，标为部分正文。不抓 Newsletter RSS。';
+      const input=document.createElement('input');
+      input.id='semianalysis-url';
+      input.type='url';
+      input.required=true;
+      input.placeholder='https://semianalysis.com/...';
+      input.setAttribute('aria-label','SemiAnalysis 公开 URL');
+      const button=document.createElement('button');
+      button.type='submit';
+      button.className='primary-button';
+      button.textContent='保存公开页';
+      semiForm.append(label,input,button);
+      semiForm.addEventListener('submit',(event)=>{
+        event.preventDefault();
+        const url=input.value.trim();
+        if(!url)return;
+        button.disabled=true;
+        api('/api/v1/feed/media/manual-partial',{method:'POST',body:JSON.stringify({url})}).then((result)=>{
+          showToast(result.saved ? '已保存为部分正文' : (result.note || '付费墙已跳过，没有保存正文'));
+          if(result.saved) loadMediaFeed({refresh:true}).catch((error)=>showToast(error.message));
+        }).catch((error)=>showToast(error.message)).finally(()=>{button.disabled=false;});
+      });
+      toolbar.append(semiForm);
+    }
   }
 }
 
@@ -12154,6 +12184,10 @@ function renderSettingsHub() {
     hub.append(button);
   }
   hub.append(renderApiTokenCard());
+  const semiNote = document.createElement('p');
+  semiNote.className = 'section-desc';
+  semiNote.textContent = 'SemiAnalysis 只保存人读公开页后粘贴的 URL，标为部分正文。不批量抓 Newsletter，不用 content:encoded 当全文。付费墙、401 和 403 会跳过。Research API 未接入。';
+  hub.append(semiNote);
 }
 
 function openSourceMenu(source) {
