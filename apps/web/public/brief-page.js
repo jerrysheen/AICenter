@@ -129,34 +129,140 @@ export function briefTreeMode({ hour = null, date = '', history = false, archive
   return 'hourly';
 }
 
+export function briefHourWindow({ now = Date.now(), hour = null, date = '' } = {}) {
+  const zone = 'Asia/Shanghai';
+  let dayStart;
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) dayStart = briefDayWindow(date, zone).startAt;
+  else {
+    const parts = zonedCalendarParts(now, zone);
+    dayStart = Date.UTC(parts.year, parts.month - 1, parts.day) - 8 * HOUR;
+  }
+  const chosen = Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : zonedClockParts(now, zone).hour;
+  let startAt = dayStart + chosen * HOUR;
+  if (!date && startAt > now) startAt -= 24 * HOUR;
+  return { startAt, endAt: startAt + HOUR };
+}
+
+export function briefHourIndexQuery({ now = Date.now(), hour = null, date = '' } = {}) {
+  const window = briefHourWindow({ now, hour, date });
+  if (date) {
+    const day = briefDayWindow(date, 'Asia/Shanghai');
+    return { startAt: Math.min(day.startAt, window.startAt), endAt: Math.max(day.endAt, window.endAt) };
+  }
+  const endAt = now + 1;
+  const startAt = Math.min(endAt - 6 * HOUR, window.startAt);
+  if (endAt - startAt <= 6 * HOUR) return { spanMs: 6 * HOUR };
+  if (endAt - startAt > 7 * 86400000) return { startAt: window.startAt, endAt: window.endAt };
+  return { startAt, endAt };
+}
+
+// 日报默认截止是上海 08:00。页面先按这一窗要正文，对不上再读窄索引。
+export function briefDailyWindow(date) {
+  const day = briefDayWindow(date, 'Asia/Shanghai');
+  return { startAt: day.startAt - 16 * HOUR, endAt: day.startAt + 8 * HOUR };
+}
+
+export function manifestFromDailyCard(card) {
+  const startAt = Number(card?.window?.startAt);
+  const endAt = Number(card?.window?.endAt);
+  if (!card?.editionId || !Number.isFinite(startAt) || !Number.isFinite(endAt)) return null;
+  return {
+    timezone: 'Asia/Shanghai',
+    pipeline: 'tree-v3',
+    directions: {},
+    information: [],
+    hours: [],
+    days: [{
+      edition: {
+        id: card.editionId,
+        layer: 'daily',
+        window: { startAt, endAt },
+        status: 'ready',
+        generatedAt: Number(card.generatedAt) || 0,
+        rootCount: 0,
+        hasEditorial: card.hasEditorial !== false,
+      },
+      attempt: null,
+    }],
+  };
+}
+
 export function createBriefPage(host) {
   let treeActive=false, treeReady=false;
   let treeManifest=null,treeManifestAt=0,treeManifestRequest=null,treeCacheEpoch=0;
+  let recentManifest=null,recentManifestAt=0,recentManifestRequest=null;
   let inflight=new AbortController();
   function freshRequests(){inflight.abort();inflight=new AbortController();}
   function callApi(path, options){return host.api(path,{...(options||{}),signal:inflight.signal});}
   const manifestPipeline=data=>typeof data?.pipeline==='string' && data.pipeline ? data.pipeline : '';
   const manifestProvesTree=data=>data?.pipeline==='tree-v3' || (data?.pipeline===undefined && Array.isArray(data?.information) && data.information.some(n=>n?.validatorVersion==='tree-response-v3.1.0'));
   const manifestPath=(spanMs)=>{const endAt=Date.now()+1;return `/api/v1/reports/tree?view=index&startAt=${endAt-spanMs}&endAt=${endAt}`;};
-  const loadTreeManifest=({force=false,spanMs=7*86400000}={})=>{
-    if(!force && spanMs>=7*86400000 && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
-    if(spanMs>=7*86400000 && treeManifestRequest)return treeManifestRequest;
+  const loadTreeManifest=({force=false,spanMs=7*86400000,startAt=null,endAt=null,priority=4}={})=>{
+    const bounded=startAt!=null && endAt!=null;
+    const wide=!bounded && spanMs>=7*86400000;
+    const recent=!bounded && spanMs===6*3600000;
+    if(!force && wide && treeManifest && Date.now()-treeManifestAt<30000)return Promise.resolve(treeManifest);
+    if(wide && treeManifestRequest)return treeManifestRequest;
+    if(!force && recent && recentManifest && Date.now()-recentManifestAt<30000)return Promise.resolve(recentManifest);
+    if(recent && recentManifestRequest)return recentManifestRequest;
     const identity=s.identity,cacheEpoch=treeCacheEpoch,signal=inflight.signal;
     const same=()=>!signal.aborted && identity===s.identity && cacheEpoch===treeCacheEpoch;
-    const pending=callApi(manifestPath(spanMs)).then(data=>{
+    const path=bounded ? `/api/v1/reports/tree?view=index&startAt=${startAt}&endAt=${endAt}` : manifestPath(spanMs);
+    const pending=callApi(path,{priority}).then(data=>{
       const pipeline=manifestPipeline(data);
-      if(same() && pipeline && spanMs>=7*86400000){treeManifest=data;treeManifestAt=Date.now();}
+      if(same() && pipeline && wide){treeManifest=data;treeManifestAt=Date.now();}
+      if(same() && pipeline && recent){recentManifest=data;recentManifestAt=Date.now();}
       if(pipeline || manifestProvesTree(data)) return data;
-      if(same() && treeManifest) return treeManifest;
+      if(same() && wide && treeManifest) return treeManifest;
+      if(same() && recent && recentManifest) return recentManifest;
       throw Object.assign(new Error('简报刊期不完整'),{code:'incomplete-manifest'});
     }, error=>{
       if(signal.aborted || error?.name==='AbortError') throw error;
-      if(same() && treeManifest) return treeManifest;
+      if(same() && wide && treeManifest) return treeManifest;
+      if(same() && recent && recentManifest) return recentManifest;
       throw error;
-    }).finally(()=>{if(treeManifestRequest===pending)treeManifestRequest=null;});
-    if(spanMs>=7*86400000) treeManifestRequest=pending;
+    }).finally(()=>{
+      if(treeManifestRequest===pending)treeManifestRequest=null;
+      if(recentManifestRequest===pending)recentManifestRequest=null;
+    });
+    if(wide) treeManifestRequest=pending;
+    if(recent) recentManifestRequest=pending;
     return pending;
   };
+  function trackRequest(promise){promise.catch(()=>{});return promise;}
+  function primeEntryBrief({treeMode,clockHour,date,history,archive}){
+    if(history || archive || treeMode==='discussion') return null;
+    if(treeMode==='hourly'){
+      const window=briefHourWindow({hour:clockHour,date});
+      const reading={
+        startAt:window.startAt,
+        endAt:window.endAt,
+        promise:trackRequest(callApi(`/api/v1/reports/reading-hour?startAt=${window.startAt}&endAt=${window.endAt}&scope=hour`,{priority:0})),
+      };
+      const category=host.hourlyCategory?.()===true ? {
+        startAt:window.startAt,
+        promise:trackRequest(callApi(`/api/v1/reports/hourly-category?hourStart=${window.startAt}`,{priority:1})),
+      } : null;
+      return {reading,category};
+    }
+    if(treeMode==='daily' && !date){
+      return {latestPromise:trackRequest(callApi('/api/v1/reports/tree/latest-daily',{priority:0}))};
+    }
+    if(treeMode==='daily' && date){
+      const window=briefDailyWindow(date);
+      return {editorial:{
+        startAt:window.startAt,
+        endAt:window.endAt,
+        promise:trackRequest(callApi(`/api/v1/reports/tree/editorial?startAt=${window.startAt}&endAt=${window.endAt}`,{priority:0})),
+      }};
+    }
+    return null;
+  }
+  function fillWeekIndex(token){
+    loadTreeManifest({priority:5}).then(data=>{
+      if(token===generation && data) tree.acceptManifest?.(data);
+    }).catch(()=>{});
+  }
   const navigate=(page)=>host.navigate ? host.navigate(`report${page ? '/'+page : ''}`) : mount(root,{history:page==='history',archive:page==='archive'});
   const tree=createInformationTreePage({...host,loadTreeManifest,history:()=>navigate('history'),latest:()=>navigate(''),archive:()=>navigate('archive')});
   const s = {identity:'', mode:'hourly', date:'', timezone:'', hours:[], manifest:[], brief:null, window:null,
@@ -205,6 +311,7 @@ export function createBriefPage(host) {
     haltDigest();
     tree.reset();treeActive=false;treeReady=false;
     treeCacheEpoch++;treeManifest=null;treeManifestAt=0;treeManifestRequest=null;
+    recentManifest=null;recentManifestAt=0;recentManifestRequest=null;
     stop(); generation++; request++; evidenceRequest++;
     if (clearStorage && s.identity) {try {storage()?.removeItem(key());} catch {}}
     dialog?.close(); dialog?.remove(); dialog=null;
@@ -271,10 +378,37 @@ export function createBriefPage(host) {
           },10000);
         } else readingSkeleton(root);
       }
+      const primed=primeEntryBrief({treeMode,clockHour,date,history,archive});
+      if(treeMode==='daily' && !history && !archive && !date && primed?.latestPromise){
+        const payload=await primed.latestPromise.catch(()=>null);
+        if(token!==generation)return;
+        const stub=manifestFromDailyCard(payload?.daily);
+        if(stub){
+          const window=payload.daily.window;
+          const editorial=payload.daily.hasEditorial===false ? null : {
+            startAt:Number(window.startAt),
+            endAt:Number(window.endAt),
+            promise:trackRequest(callApi(`/api/v1/reports/tree/editorial?startAt=${window.startAt}&endAt=${window.endAt}`,{priority:0})),
+          };
+          clearTimeout(slow);
+          pause();treeActive=true;treeReady=false;
+          await tree.mount(root,{manifest:stub,date,history,mode:'daily',hour:null,node:focusId,resetSelection:true,prime:{latest:payload.daily,editorial}});
+          if(token!==generation)return;
+          treeReady=true;
+          fillWeekIndex(token);
+          return;
+        }
+      }
       const recentHour=treeMode==='hourly' && !history && !archive && !date;
-      let manifest=await (recentHour ? loadTreeManifest({spanMs:6*3600000}) : loadTreeManifest()).catch(()=>null);
-      const week=recentHour ? loadTreeManifest().catch(()=>null) : null;
-      if(recentHour && (!manifest || !manifestProvesTree(manifest))) manifest=await week;
+      const datedHour=treeMode==='hourly' && !history && !archive && Boolean(date);
+      const datedDaily=treeMode==='daily' && !history && !archive && Boolean(date);
+      let manifest=await (recentHour || datedHour
+        ? loadTreeManifest({...briefHourIndexQuery({hour:clockHour,date}),priority:3})
+        : datedDaily
+          ? loadTreeManifest({...briefDailyWindow(date),priority:3})
+          : loadTreeManifest({priority:3})).catch(()=>null);
+      const weekFallback=(recentHour || datedHour) && (!manifest || !manifestProvesTree(manifest));
+      if(weekFallback) manifest=await loadTreeManifest({priority:4}).catch(()=>null);
       clearTimeout(slow);
       if(token!==generation)return;
       // During a rolling upgrade the older reader lacks pipeline; independently prepared
@@ -283,10 +417,13 @@ export function createBriefPage(host) {
       const treeEnabled=Boolean(manifest) && manifestProvesTree(manifest);
       if(treeEnabled) {
         pause();treeActive=true;treeReady=false;
-        await tree.mount(root,{manifest,date,history,mode:treeMode,hour:clockHour,node:focusId,resetSelection:true});
+        await tree.mount(root,{manifest,date,history,mode:treeMode,hour:clockHour,node:focusId,resetSelection:true,prime:primed});
         if(token!==generation)return;
         treeReady=true;
-        if(week) week.then(data=>{if(token===generation && data) tree.acceptManifest?.(data);});
+        if(!weekFallback && (recentHour || datedHour || datedDaily)){
+          const gate=primed?.reading?.promise || primed?.editorial?.promise || Promise.resolve();
+          gate.then(()=>{},()=>{}).then(()=>{if(token===generation) fillWeekIndex(token);});
+        }
         return;
       }
       if(!manifest || !manifestPipeline(manifest)){

@@ -139,6 +139,13 @@ function dropEllipsisLead(value) {
   }
   return text;
 }
+const INFORMATION_INDEX_MAX_MS = 2 * 86400000;
+export function informationIndexPath(startAt, endAt) {
+  const start = Number(startAt);
+  const end = Number(endAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || !(end > start) || end - start > INFORMATION_INDEX_MAX_MS) return '';
+  return `/api/v1/reports/tree?view=index&information=1&startAt=${start}&endAt=${end}`;
+}
 export function readingExpandedText(node, translationText) {
   const translated = dropEllipsisLead(translationText);
   if (translated) return translated;
@@ -169,7 +176,7 @@ export function createInformationTreePage(host) {
     const key=String(startAt || 0);
     return keepRecent(hourOpens, key, hourOpens.get(key) || new Set());
   }
-  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}};let viewKey='',shownKey='',away=false,restoringScroll=false,scrollLocked=0,scrollTimer=0,nextManifest=null,informationRows=null,informationRequest=null,informationEpoch=0,session=0,latestDailyPromise=null;
+  const names=new Map(),cache=new Map(),nodeRequests=new Map(),editionCache=new Map(),editorialCache=new Map(),fullEditions=new Map(),editionLoads=new Map(),expanded=new Set(),positions=new Map(),memory={hourly:{},daily:{}},informationByWindow=new Map(),informationLoads=new Map();let viewKey='',shownKey='',away=false,restoringScroll=false,scrollLocked=0,scrollTimer=0,nextManifest=null,informationEpoch=0,session=0,latestDailyPromise=null,entryPrime=null;
   const relationLabels={'same-event':'同一事件的后续进展','shared-theme':'共同主题','complementary':'相互补充','contradictory':'不同说法','supported-impact':'有依据的影响','unverified-link':'尚待验证的潜在联系'};
   const remember=n=>{if(!n)return;cache.delete(n.id);cache.set(n.id,n);while(cache.size>400)cache.delete(cache.keys().next().value);};
   const active=()=>root?.isConnected && root.classList.contains('tree-page') && (host.active?.() ?? true) && (host.session?.() ?? true);
@@ -188,20 +195,26 @@ export function createInformationTreePage(host) {
     if (mode === 'hourly') {
       paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);
       paintHourUnread();
+    } else if (mode === 'daily' && !showMaterials) {
+      paintDailyChips(recentDailies());
     }
   }
-  function invalidateInformationIndex(){informationEpoch++;informationRows=null;informationRequest=null;}
-  async function loadInformationIndex(){
-    if(informationRows)return informationRows;
-    if(!informationRequest){
-      const endAt=Date.now()+1,cacheToken=informationEpoch;
-      const pending=api(`/api/v1/reports/tree?view=index&information=1&startAt=${endAt-7*86400000}&endAt=${endAt}`).then(data=>{
-        if(cacheToken===informationEpoch)informationRows=data.information || [];
-        return cacheToken===informationEpoch ? (informationRows || []) : (data.information || []);
-      }).finally(()=>{if(cacheToken===informationEpoch && informationRequest===pending)informationRequest=null;});
-      informationRequest=pending;
+  function invalidateInformationIndex(){informationEpoch++;informationByWindow.clear();informationLoads.clear();}
+  async function loadInformationIndex(window){
+    const path=informationIndexPath(window?.startAt, window?.endAt);
+    if(!path) return [];
+    const key=`${window.startAt}:${window.endAt}`;
+    if(informationByWindow.has(key)) return informationByWindow.get(key);
+    if(!informationLoads.has(key)){
+      const cacheToken=informationEpoch;
+      const pending=api(path,{priority:4}).then(data=>{
+        const rows=data?.information || [];
+        if(cacheToken===informationEpoch) informationByWindow.set(key, rows);
+        return rows;
+      }).catch(error=>{if(aborted(error)) throw error;return [];}).finally(()=>{if(informationLoads.get(key)===pending) informationLoads.delete(key);});
+      informationLoads.set(key, pending);
     }
-    return informationRequest;
+    return informationLoads.get(key);
   }
   function loadEditionDocument(id){
     if(fullEditions.has(id))return Promise.resolve(fullEditions.get(id));
@@ -217,8 +230,10 @@ export function createInformationTreePage(host) {
     return editionLoads.get(id);
   }
   async function materialIndex(selected){
-    const rows=manifest?.information?.length ? manifest.information : await loadInformationIndex();
-    return rows.filter(n=>{const at=n.eventAt ?? n.window?.startAt;return at>=selected.window.startAt && at<selected.window.endAt;});
+    const start=selected?.window?.startAt, end=selected?.window?.endAt;
+    const inWindow=n=>{const at=n?.eventAt ?? n?.window?.startAt;return at>=start && at<end;};
+    if(manifest?.information?.length) return manifest.information.filter(inWindow);
+    return (await loadInformationIndex(selected?.window)).filter(inWindow);
   }
   const node=async id=>{
     if(cache.has(id))return cache.get(id);
@@ -629,7 +644,7 @@ export function createInformationTreePage(host) {
   }
   let hourStripKey='',seenIds=[],seen=new Set(),opening={id:'',ticket:0},openTicket=0;
   const readingCache=new Map(), readingLoads=new Map(), openGaps=new Set();
-  let readingIndex, pendingClockHour=null, pendingNodeId='', hourFallbackText='', hourRevealEarlier=false, slowTimer=0;
+  let readingIndex, pendingClockHour=null, pendingNodeId='', hourFallbackText='', hourRevealEarlier=false, slowTimer=0, readingIndexQueued=false;
   const storage=()=>{try{return localStorage;}catch{return null;}};
   const seenKey=()=>{const session=host.session?.();const identity=session?`${session.role||'user'}:${session.device?.id||'desktop'}`:'local';return `ai-center.hourly-seen.${encodeURIComponent(identity)}`;};
   const editionIdOk=id=>typeof id==='string' && /^edition:[A-Za-z0-9:_-]{8,180}$/.test(id);
@@ -1006,7 +1021,11 @@ export function createInformationTreePage(host) {
   }
   function loadLatestDaily() {
     if (!latestDailyPromise) {
-      latestDailyPromise = api('/api/v1/reports/tree/latest-daily').then(data => data?.daily || null).catch(error => {
+      const primed=entryPrime?.latest;
+      latestDailyPromise = (primed
+        ? Promise.resolve(primed).then(data => data?.daily || data || null)
+        : api('/api/v1/reports/tree/latest-daily', { priority: 0 }).then(data => data?.daily || null)
+      ).catch(error => {
         latestDailyPromise = null;
         if (aborted(error)) throw error;
         return null;
@@ -1035,13 +1054,7 @@ export function createInformationTreePage(host) {
     let editions = recentDailies();
     if (extra && !editions.some(item => item.window.startAt === extra.window.startAt)) editions = [extra, ...editions];
     if(!dailyStart || !editions.some(item=>item.window.startAt===dailyStart)) dailyStart=editions[0]?.window.startAt || 0;
-    dayChips.replaceChildren();
-    for(const edition of editions){
-      const chip=button(dailyLabel(edition),()=>{dailyStart=edition.window.startAt;openedId='';openedDirection='';render();});
-      chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);
-      if(edition.window.startAt===dailyStart) chip.classList.add('is-active');
-      dayChips.append(chip);
-    }
+    paintDailyChips(editions);
     setPeriodMeta('');
     syncPeriodChrome();
     const edition=editions.find(item=>item.window.startAt===dailyStart) || null;
@@ -1133,10 +1146,27 @@ export function createInformationTreePage(host) {
       } else page.prepend(el('p', data.line, 'southbound-daily-line'));
     }).catch((error) => { if (!aborted(error)) return; });
   }
+  function paintDailyChips(editions) {
+    if(!dayChips) return;
+    dayChips.replaceChildren();
+    for(const edition of editions || []){
+      const chip=button(dailyLabel(edition),()=>{dailyStart=edition.window.startAt;openedId='';openedDirection='';render();});
+      chip.className='chip-tab';chip.dataset.start=String(edition.window.startAt);
+      if(edition.window.startAt===dailyStart) chip.classList.add('is-active');
+      dayChips.append(chip);
+    }
+  }
   function loadEditorial(edition) {
     if(edition?.hasEditorial===false)return Promise.resolve(null);
     const key=`${edition.window.startAt}:${edition.window.endAt}`;
-    if(!editorialCache.has(key)) editorialCache.set(key, api(`/api/v1/reports/tree/editorial?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}`).then(data=>data.editorial || null).catch(error=>{if(aborted(error)){editorialCache.delete(key);throw error;}return null;}));
+    if(!editorialCache.has(key)){
+      const primed=entryPrime?.editorial;
+      const matched=primed && primed.startAt===edition.window.startAt && primed.endAt===edition.window.endAt ? primed.promise : null;
+      const pending=(matched || api(`/api/v1/reports/tree/editorial?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}`, { priority: 0 }))
+        .then(data=>data?.editorial || null)
+        .catch(error=>{if(aborted(error)){editorialCache.delete(key);throw error;}return null;});
+      editorialCache.set(key, pending);
+    }
     return editorialCache.get(key);
   }
   function researchEvent(editorial, eventId) {return editorial.events.find(event=>event.eventId===eventId);}
@@ -1436,14 +1466,41 @@ export function createInformationTreePage(host) {
     if(readingIndex!==undefined) return readingIndex;
     try{
       const endAt=Date.now()+1;
-      const data=await api(`/api/v1/reports/reading-hour/index?startAt=${endAt-7*86400000}&endAt=${endAt}&scope=hour`);
+      const data=await api(`/api/v1/reports/reading-hour/index?startAt=${endAt-7*86400000}&endAt=${endAt}&scope=hour`, { priority: 5 });
       const map=new Map();
       for(const row of data?.hours || []) if(row && Number.isFinite(Number(row.startAt))) map.set(Number(row.startAt), row);
       readingIndex=map;
     }catch(error){if(aborted(error))throw error;readingIndex=null;}
     return readingIndex;
   }
+  function queueReadingIndex(token, {hadHour=true}={}) {
+    if(readingIndex!==undefined || readingIndexQueued) return;
+    readingIndexQueued=true;
+    void loadReadingIndex().then(()=>{
+      if(token!==epoch) return;
+      if(!hadHour && hourRows().length) return render();
+      paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);
+    }).catch(()=>{});
+  }
+  async function primedReadingSnapshot(edition) {
+    const reading=entryPrime?.reading;
+    if(!reading || reading.startAt!==edition?.window?.startAt || reading.endAt!==edition?.window?.endAt) return undefined;
+    try{
+      const data=await reading.promise;
+      const snapshot=data?.empty===true ? null : (data?.snapshot || null);
+      readingCache.set(edition.window.startAt, snapshot);
+      return snapshot;
+    }catch(error){
+      if(aborted(error)) throw error;
+      if(error?.status===404){readingCache.set(edition.window.startAt, null);return null;}
+      return undefined;
+    }
+  }
   async function fetchReadingSnapshot(edition, {refresh=false}={}) {
+    if(!refresh){
+      const primed=await primedReadingSnapshot(edition);
+      if(primed!==undefined) return primed;
+    }
     const path=pinnedReadingId && openedId ? `/api/v1/reports/reading-hour/snapshot?id=${encodeURIComponent(pinnedReadingId)}` : `/api/v1/reports/reading-hour?startAt=${edition.window.startAt}&endAt=${edition.window.endAt}&scope=hour`;
     try{
       const data=await api(path, refresh ? { cache: 'no-store', priority: 1 } : { priority: 2 });
@@ -1531,7 +1588,10 @@ export function createInformationTreePage(host) {
     if (!categorySlot) return;
     const start=edition?.window?.startAt;
     if (!Number.isFinite(start)) return;
-    api(`/api/v1/reports/hourly-category?hourStart=${start}`).then((data) => {
+    const primed=entryPrime?.category && entryPrime.category.startAt===start ? entryPrime.category.promise : null;
+    const loadCategory=()=>api(`/api/v1/reports/hourly-category?hourStart=${start}`, { priority: 1 });
+    const pending=primed ? primed.catch(error=>{if(aborted(error)) throw error;return loadCategory();}) : loadCategory();
+    pending.then((data) => {
       if (token !== epoch || categorySlot.isConnected === false) return;
       paintHourlyCategory(categorySlot, data?.enabled ? data.edition : null);
     }).catch((error) => {
@@ -1560,20 +1620,16 @@ export function createInformationTreePage(host) {
     paintDelay(rows);
     const edition=pool.find(item=>item.window.startAt===selectedHourStart) || rows.find(item=>item.window.startAt===selectedHourStart) || null;
     const hadHour=Boolean(edition);
-    void loadReadingIndex().then(()=>{
-      if(token!==epoch) return;
-      if(!hadHour && hourRows().length) return render();
-      paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);
-    }).catch(()=>{});
     paintHourStrip(rows, readingIndex instanceof Map ? readingIndex : null);
     selected=edition;root.dataset.editionId=edition?.id || '';root.dataset.windowStart=String(edition?.window.startAt ?? '');root.dataset.briefMode='hourly';
-    if(!edition){clearHourSlow();finishOpening(claim,false);list.replaceChildren(el('p','这个小时还没有小时报。','tree-hour-empty'));return;}
+    if(!edition){clearHourSlow();finishOpening(claim,false);list.replaceChildren(el('p','这个小时还没有小时报。','tree-hour-empty'));queueReadingIndex(token,{hadHour});return;}
     const key=edition.window.startAt;
     if(readingCache.has(key)){
       const snapshot=readingCache.get(key);
-      if(!snapshot) return paintEmptyHour(edition, claim, token);
+      if(!snapshot){queueReadingIndex(token,{hadHour});return paintEmptyHour(edition, claim, token);}
       await renderReadingHour(token,claim,edition,snapshot);
       if(snapshot.status==='partial') refreshPartial(edition, token, claim);
+      queueReadingIndex(token,{hadHour});
       return;
     }
     setPeriodMeta('');
@@ -1581,9 +1637,10 @@ export function createInformationTreePage(host) {
     const snapshot=await readingHourPromise(edition);
     if(token!==epoch){const current=claim?.ticket===opening.ticket;finishOpening(claim,false);if(current && root?.isConnected)paintHourUnread();return;}
     clearHourSlow();
-    if(!snapshot) return paintEmptyHour(edition, claim, token);
+    if(!snapshot){queueReadingIndex(token,{hadHour});return paintEmptyHour(edition, claim, token);}
     await renderReadingHour(token,claim,edition,snapshot);
     if(snapshot.status==='partial') refreshPartial(edition, token, claim);
+    queueReadingIndex(token,{hadHour});
   }
   async function render(options) {
     haltDigest();
@@ -1693,7 +1750,7 @@ export function createInformationTreePage(host) {
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();else if(active())resume();});
   document.addEventListener('keydown',onHourKey);
   return {async mount(target,options={}){
-    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly'||options.mode==='discussion'?options.mode:'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;root.replaceChildren();root.classList.add('tree-page','brief-page');if(mode==='hourly')root.classList.add('is-hourly');
+    stop();flight++;requests.abort();requests=new AbortController();epoch++;settled=false;loadSeen();const flightToken=flight;root=target;mode=options.mode==='hourly'||options.mode==='discussion'?options.mode:'daily';dateFilter=options.date || '';pendingClockHour=Number.isInteger(options.hour) && options.hour>=0 && options.hour<=23 ? options.hour : null;pendingNodeId=options.node ? String(options.node) : '';hourFallbackText='';hourRevealEarlier=false;showMaterials=false;entryPrime=options.prime || null;readingIndexQueued=false;root.replaceChildren();root.classList.add('tree-page','brief-page');if(mode==='hourly')root.classList.add('is-hourly');
     if(mode==='hourly' && pendingClockHour==null && !dateFilter) pendingClockHour=hourClock(Date.now());
     if(options.resetSelection){selected=null;viewKey='';shownKey='';}
     const primary=el('div','','tree-primary source-control');primary.setAttribute('aria-label','简报');
@@ -1766,5 +1823,5 @@ export function createInformationTreePage(host) {
       const saved=memory[mode] || {};direction=saved.direction ?? null;directionExplicit=Boolean(saved.directionExplicit);if(saved.tag)tag.value=saved.tag;
       periods();await render();if(flightToken!==flight)return;settled=true;resume(false);
     }catch(error){if(aborted(error) || token!==epoch || flightToken!==flight)return;list.replaceChildren(el('p','暂时无法读取简报。'),button('重试读取',()=>this.mount(target,options)));}
-  },check,acceptUpdate,acceptManifest,resume,stop,suspend,captureScroll(){rememberPosition();},isSettled(){return settled;},selectHour,showingHour,switchMode,currentMode(){return mode;},hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
+  },check,acceptUpdate,acceptManifest,resume,stop,suspend,captureScroll(){rememberPosition();},isSettled(){return settled;},selectHour,showingHour,switchMode,currentMode(){return mode;},hasHourScroll,focusNode,clearOpened,selectDirection(value){if(directions[value]){direction=value;directionExplicit=true;return render();}},reset(){haltDigest();root?.querySelectorAll('.tree-reading-chrome').forEach(node=>node.remove());root?.classList.remove('is-reading','is-hourly','is-discussion');clearHourSlow();readingCache.clear();readingLoads.clear();readingIndex=undefined;pendingClockHour=null;hourFallbackText='';hourRevealEarlier=false;openGaps.clear();stop();flight++;requests.abort();requests=new AbortController();epoch++;session++;settled=false;rendering=0;cache.clear();nodeRequests.clear();editionCache.clear();editorialCache.clear();latestDailyPromise=null;fullEditions.clear();editionLoads.clear();invalidateInformationIndex();entryPrime=null;readingIndexQueued=false;expanded.clear();if(scrollTimer){clearTimeout(scrollTimer);scrollTimer=0;}positions.clear();hourOpens.clear();shownKey='';away=false;viewKey='';selected=null;direction=null;directionExplicit=false;showMaterials=false;selectedHourStart=0;dailyStart=0;openedId='';openedDirection='';hourStripKey='';seen=new Set();seenIds=[];opening={id:'',ticket:0};manifest=null;nextManifest=null;memory.hourly={};memory.daily={};root=null;}};
 }

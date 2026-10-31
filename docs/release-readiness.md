@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-31 打开 `#report`、小时报或日报时，第一笔请求是这一小时的阅读稿，或这一期日报。不再先下载 7 日 `tree?view=index&information=1`。小时条用的 7 日刊期索引和 7 日阅读索引，要等这一份回来再补。打开「本期材料」只取当前这一期的信息索引，窗口最长两天。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-brief-first-packet.md`。
+
 2026-10-30 `report.hourly.extract` 积压不再堵住后面的整点。运行超过 `AI_CENTER_HOURLY_MAX_RUNNING_MS`（默认 45 分钟）仍记 `WorkerRunTimeout` 并清掉 running，不补尝试、不重新入队；已经发出的那一次调用结束后不再开下一小时，也不再排 follow-up。租约中断最多把 `max_attempts` 从 2 补到 3，第三次租约中断记 `WorkerLeaseExpired` 并停在 failed。更早的已结束小时如果还以 0 或 10 排在前台，降到 -5；超过一小时还排着的 `report.hourly.default` 整点任务取消，原因是 `superseded-by-newer-hour`。`AI_CENTER_HOURLY_NO_CATCHUP` 未设置或不是 `0` 时，整点只处理刚结束的那一小时，可重试的浓缩失败记 `hourly-no-retry`，任务失败后不回到队列。`report.hourly.failure-catchup` 仍是 `enabled=0`。`report.hourly.default` 仍启用。已知小时的类目刊期改在信息树之前写，树失败或超时不再把这一小时的类目一起丢掉。类目要点仍优先用已有中文，截断原题不作为最终 bullet。缺了的历史小时不在这次补。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。页面没有改，Web 不用为这项重启。见 `progress/2026-10-30-hourly-extract-backlog.md`。
 
 2026-10-30 类目小时的要点在已有中文译文时不再用英文标题。X 和雪球入库把标题切成前 48 字加「…」，补齐又拿 `title || excerpt`，所以 bullet 经常就是这截原题；`feed_item_translations` 里的 Gemma 中文没有进刊。现在按内容 id 和 `provider:externalId` 读取已有译文，模型输入和没被写进事件的材料都优先用中文第一句。截断原题不作为最终 bullet；没有译文时用更长的摘要。待标注送给模型的仍最多 8 条，其余补齐走同一条规则，不为此加 Flash。提示词要求沿用输入里的中文，不改回英文。失败补跑保持关闭。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。已经落库的类目刊期不会自动重写，下一轮 `report.hourly.extract` 写到的小时才用新要点。页面没有改，Web 不用为这项重启。见 `progress/2026-10-30-hourly-category-zh-bullets.md`。
