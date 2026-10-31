@@ -112,11 +112,14 @@ test('an empty 200 manifest is not cached and does not open the legacy brief', a
   assert.match(shown, /暂时无法读取简报刊期/);
   assert.match(shown, /重试读取/);
   assert.doesNotMatch(shown, /旧版简报|三层浓缩树/);
-  assert.equal(calls.filter((path) => path.includes('/reports/tree')).length, 1);
+  assert.equal(calls[0].includes('/api/v1/reports/reading-hour') && !calls[0].includes('/index'), true);
+  assert.equal(calls.some((path) => path.includes('information=1')), false);
+  assert.equal(calls.filter((path) => path.includes('/reports/tree')).length, 2);
   assert.equal(calls.some((path) => path.includes('/reports/hourly')), false);
 
   await settle(page, target);
-  assert.equal(calls.filter((path) => path.includes('/reports/tree')).length, 2);
+  assert.equal(calls.filter((path) => path.includes('/reports/tree')).length, 4);
+  assert.equal(calls.some((path) => path.includes('information=1')), false);
   page.stop();
 });
 
@@ -166,28 +169,138 @@ test('a failed refetch keeps the last manifest that had a pipeline', async () =>
   try {
     const first = await settle(page, target);
     assert.ok(first);
-    assert.equal(calls.length, 1);
+    assert.equal(calls[0].includes('/api/v1/reports/reading-hour') && !calls[0].includes('/index'), true);
+    assert.equal(calls.filter((path) => path.includes('/reports/tree')).length, 1);
+    assert.equal(calls.some((path) => path.includes('information=1')), false);
     assert.doesNotMatch(textOf(target), /旧版简报/);
 
     await settle(page, target);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.filter((path) => path.includes('/reports/tree')).length, 1);
 
     clock = now + 31_000;
     mode = 'throw';
     const failed = await settle(page, target);
     assert.ok(failed);
-    assert.equal(calls.length, 2);
     assert.doesNotMatch(textOf(target), /旧版简报/);
     assert.equal(calls.some((path) => path.includes('/reports/hourly')), false);
+    assert.equal(calls.some((path) => path.includes('information=1')), false);
 
     clock = now + 62_000;
     mode = 'empty';
     const empty = await settle(page, target);
     assert.ok(empty);
-    assert.equal(calls.length, 3);
     assert.doesNotMatch(textOf(target), /旧版简报/);
+    assert.equal(calls.some((path) => path.includes('information=1')), false);
   } finally {
     Date.now = original;
     page.stop();
   }
+});
+
+function spanOf(path) {
+  const url = new URL(path, 'http://local');
+  return Number(url.searchParams.get('endAt')) - Number(url.searchParams.get('startAt'));
+}
+
+test('hourly entry requests the reading hour before a week index', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const calls = [];
+  const page = createBriefPage({
+    api(path) {
+      calls.push(path);
+      if (path.includes('/reading-hour') && !path.includes('/index')) return gate;
+      return Promise.resolve(tree('tree-v3'));
+    },
+    session: () => ({ role: 'desktop', device: { id: 'desk' } }),
+    active: () => true,
+  });
+  const target = document.createElement('div');
+  target.isConnected = true;
+  const pending = page.mount(target);
+  pending.catch(() => {});
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(calls[0].includes('/api/v1/reports/reading-hour') && !calls[0].includes('/index'), true);
+  assert.equal(calls.some((path) => path.includes('information=1')), false);
+  const indexes = calls.filter((path) => path.includes('/reports/tree?'));
+  assert.ok(indexes.length >= 1);
+  for (const path of indexes) assert.ok(spanOf(path) <= 6 * 3600000, path);
+  release({ ok: true, empty: true, snapshot: null, message: '这一小时没有内容' });
+  await Promise.resolve();
+  page.stop();
+});
+
+test('daily entry requests the latest card, then that editorial, before the week index', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const calls = [];
+  const page = createBriefPage({
+    api(path) {
+      calls.push(path);
+      if (path.includes('latest-daily')) return gate;
+      if (path.includes('/editorial')) return new Promise(() => {});
+      return Promise.resolve(tree('tree-v3'));
+    },
+    session: () => ({ role: 'desktop', device: { id: 'desk' } }),
+    active: () => true,
+  });
+  const target = document.createElement('div');
+  target.isConnected = true;
+  const pending = page.mount(target, { mode: 'daily' });
+  pending.catch(() => {});
+  await Promise.resolve();
+  assert.deepEqual(calls, ['/api/v1/reports/tree/latest-daily']);
+  const start = 1_700_000_000_000;
+  release({
+    ok: true,
+    daily: {
+      editionId: 'edition:daily-one',
+      reportDate: '2026-10-31',
+      window: { startAt: start, endAt: start + 86400000 },
+      hasEditorial: true,
+      generatedAt: start,
+    },
+  });
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  assert.equal(calls[1].includes('/api/v1/reports/tree/editorial'), true);
+  assert.equal(calls.some((path) => path.includes('information=1')), false);
+  assert.equal(calls.some((path) => path.includes('view=index') && spanOf(path) > 2 * 86400000), false);
+  page.stop();
+});
+
+test('a dated daily requests that day editorial before any week index', async () => {
+  const calls = [];
+  const page = createBriefPage({
+    api(path) {
+      calls.push(path);
+      if (path.includes('/editorial')) return new Promise(() => {});
+      return Promise.resolve(tree('tree-v3'));
+    },
+    session: () => ({ role: 'desktop', device: { id: 'desk' } }),
+    active: () => true,
+  });
+  const target = document.createElement('div');
+  target.isConnected = true;
+  const pending = page.mount(target, { date: '2026-10-30' });
+  pending.catch(() => {});
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(calls[0].includes('/api/v1/reports/tree/editorial'), true);
+  assert.equal(calls.some((path) => path.includes('information=1')), false);
+  const indexes = calls.filter((path) => path.includes('view=index'));
+  assert.ok(indexes.length >= 1);
+  for (const path of indexes) assert.equal(spanOf(path), 86400000);
+  page.stop();
+});
+
+test('information index path covers one edition window, not seven days', async () => {
+  const { informationIndexPath } = await import('../apps/web/public/information-tree.js');
+  const start = 1_700_000_000_000;
+  assert.equal(
+    informationIndexPath(start, start + 3600000),
+    `/api/v1/reports/tree?view=index&information=1&startAt=${start}&endAt=${start + 3600000}`,
+  );
+  assert.equal(informationIndexPath(start, start + 86400000), `/api/v1/reports/tree?view=index&information=1&startAt=${start}&endAt=${start + 86400000}`);
+  assert.equal(informationIndexPath(start, start + 7 * 86400000), '');
 });
