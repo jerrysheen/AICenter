@@ -12,6 +12,8 @@ tree-v3.1审核修复：注册固定report.information.prepare任务，在采集
 
 2026-10-05 用户授权按内容类型分流 TrendForce：原采集任务一次获取，经 Feed 注入 Port 分别写 Media 与行情报价 Service/Repository；硬件报价独立于股票 OHLC。来源和旧 ContentItem 身份保留，迁移显式执行；细则见 `hardware-prices-v1.md`。
 
+2026-10-31 类目小时不再另打 `hourly-category-brief`，也不再按 Gemma 目录标签分桶。`report.hourly.extract` 在信息树和阅读分类之后，把这一小时阅读稿已经显示的中文标题和方向写入 `hourly_category_editions`。方向是金融、产业个股、科技与AI、地缘政治。阅读稿没有这些方向时，标题仍用信息节点上的那句。树抛错时不先写一份英文类目。失败补跑仍关闭。见 `progress/2026-10-31-hourly-category-tree-reuse.md`。
+
 2026-10-30 `report.hourly.extract` 超时或失败后释放 running。失败补跑仍默认关闭。整点任务在补跑关闭时只处理刚结束的那一小时，已知小时的类目刊期写在信息树之前。超过一小时的排队整点会被取消，更早小时若还占着前台优先级则降到 -5。租约中断最多把尝试上限补到 3，运行超时不补、不重新入队。见 `progress/2026-10-30-hourly-extract-backlog.md`。
 
 2026-10-30 类目小时进刊优先用已有中文译文。截成约 48 字并以省略号结尾的原题不作为最终 bullet。待标注未送进模型的条目同样补齐。Flash 次数和失败补跑不改。见 `progress/2026-10-30-hourly-category-zh-bullets.md`。

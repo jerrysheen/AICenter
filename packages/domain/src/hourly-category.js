@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { HOURLY_CATEGORY_EVENT_MAX, HOURLY_CATEGORY_FORMAT, UNTAGGED_CATEGORY_ID } from '../../contracts/src/hourly-category.js';
 import { localizationItemId, needsZhLocalization } from './localize-texts.js';
 import { treeCatalog } from './information-tree-policy.js';
+import { readingPlacement } from './reading-focus-route.js';
 
 export const HOURLY_CATEGORY_TASK = 'hourly-category-brief';
 export const UNTAGGED_CATEGORY_LABEL = '待标注';
@@ -23,6 +24,131 @@ export const HOURLY_CATEGORY_INSTRUCTION = [
 ].join('\n');
 
 export const HOURLY_CATEGORY_PROMPT_HASH = createHash('sha256').update(HOURLY_CATEGORY_INSTRUCTION).digest('hex');
+
+// The hourly page's tree pane is the reading hour. These four names are the
+// headings it already shows. Category editions copy them; they do not invent
+// another Gemma tag bucket or another title.
+export const TREE_READING_DIRECTIONS = Object.freeze([
+  { id: 'finance', label: '金融' },
+  { id: 'industry', label: '产业个股' },
+  { id: 'ai', label: '科技与AI' },
+  { id: 'geopolitics', label: '地缘政治' },
+]);
+const TREE_DIRECTION_BY_LABEL = new Map(TREE_READING_DIRECTIONS.map((row) => [row.label, row.id]));
+export const TREE_CATEGORY_PROMPT_HASH = createHash('sha256').update('hourly-category-tree-reuse-v1').digest('hex');
+
+export function treeReadingDirectionId(name) {
+  return TREE_DIRECTION_BY_LABEL.get(String(name || '').trim()) || '';
+}
+
+function treeItemRow(item) {
+  const sourceId = String(item?.sourceId || '').trim();
+  const title = String(item?.title || '').replace(/\s+/g, ' ').trim();
+  if (!sourceId || !title || item?.disposition === 'out-of-scope') return null;
+  const direction = treeReadingDirectionId(item?.readingDirectionName);
+  return {
+    sourceId,
+    title,
+    direction,
+    eventAt: Number(item?.firstIngestedAt) || Number(item?.eventAt) || 0,
+  };
+}
+
+export function nodeToTreeCategoryItem(node) {
+  const reading = node?.readingClassification;
+  const placement = readingPlacement(reading || {});
+  const named = treeReadingDirectionId(placement.readingDirectionName);
+  const classified = reading?.status === 'classified' && named;
+  return {
+    sourceId: node?.sourceId,
+    title: node?.title,
+    readingDirectionName: classified ? placement.readingDirectionName : '',
+    disposition: reading?.status === 'out-of-scope' ? 'out-of-scope' : 'hit',
+    eventAt: node?.eventAt,
+    firstIngestedAt: node?.eventAt,
+  };
+}
+
+function eventsFromTreeRows(rows) {
+  const sorted = [...rows].sort((left, right) => left.eventAt - right.eventAt || left.sourceId.localeCompare(right.sourceId));
+  const seen = new Set();
+  const unique = [];
+  for (const row of sorted) {
+    if (seen.has(row.sourceId)) continue;
+    seen.add(row.sourceId);
+    unique.push(row);
+  }
+  const truncated = unique.length > CATEGORY_EVENT_STORE_LIMIT;
+  const kept = truncated ? unique.slice(0, CATEGORY_EVENT_STORE_LIMIT) : unique;
+  return {
+    inputCount: unique.length,
+    truncated,
+    events: kept.map((row) => ({
+      bullet: clipCategoryText(row.title, 400),
+      sourceIds: [row.sourceId],
+    })),
+  };
+}
+
+// One event per tree row. The bullet is the tree title, not a new model sentence.
+export function buildTreeCategoryEdition({ workspaceId = 'local', hourStart, items = [], generatedAt = Date.now() } = {}) {
+  const placed = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    const row = treeItemRow(item);
+    if (!row || seen.has(row.sourceId)) continue;
+    seen.add(row.sourceId);
+    placed.push(row);
+  }
+  const groups = new Map(TREE_READING_DIRECTIONS.map((direction) => [direction.id, []]));
+  const untagged = [];
+  for (const row of placed) {
+    if (row.direction && groups.has(row.direction)) groups.get(row.direction).push(row);
+    else untagged.push(row);
+  }
+  const categories = [];
+  for (const direction of TREE_READING_DIRECTIONS) {
+    const rows = groups.get(direction.id) || [];
+    if (!rows.length) continue;
+    const packed = eventsFromTreeRows(rows);
+    categories.push({
+      id: direction.id,
+      label: direction.label,
+      inputCount: packed.inputCount,
+      truncated: packed.truncated,
+      model: '',
+      promptHash: TREE_CATEGORY_PROMPT_HASH,
+      generatedAt,
+      status: 'ready',
+      events: packed.events,
+    });
+  }
+  if (untagged.length) {
+    const packed = eventsFromTreeRows(untagged);
+    categories.push({
+      id: UNTAGGED_CATEGORY_ID,
+      label: UNTAGGED_CATEGORY_LABEL,
+      inputCount: packed.inputCount,
+      truncated: packed.truncated,
+      model: '',
+      promptHash: TREE_CATEGORY_PROMPT_HASH,
+      generatedAt,
+      status: 'ready',
+      events: packed.events,
+    });
+  }
+  return {
+    formatVersion: HOURLY_CATEGORY_FORMAT,
+    id: `hcat:${hourStart}`,
+    workspaceId,
+    window: { startAt: hourStart, endAt: hourStart + HOUR_MS },
+    status: categories.length ? 'ready' : 'empty',
+    dualRun: true,
+    untaggedCount: untagged.length,
+    categories,
+    generatedAt,
+  };
+}
 
 export function hourlyCategoryEnabled(env = process.env) {
   const raw = String(env?.AI_CENTER_HOURLY_CATEGORY ?? '').trim().toLowerCase();
@@ -523,6 +649,7 @@ export function createHourlyCategoryService({
   agentRuntime = null,
   excerptPort = null,
   nodeTagPort = null,
+  nodePort = null,
   enabled = false,
   now = () => Date.now(),
   maxItems = CATEGORY_BUCKET_ITEM_LIMIT,
@@ -660,11 +787,37 @@ export function createHourlyCategoryService({
     return repository.save(workspaceId, edition);
   }
 
+  async function publishFromTree({ workspaceId = 'local', hourStart, snapshot = null } = {}) {
+    if (!Number.isFinite(hourStart) || hourStart % HOUR_MS !== 0) throw new Error('小时起点必须为整小时');
+    if (hourStart + HOUR_MS > now()) throw new Error('目标小时尚未结束');
+    let items = null;
+    if (snapshot && Array.isArray(snapshot.items)) items = snapshot.items;
+    else if (typeof nodePort === 'function') {
+      const nodes = await nodePort(workspaceId, hourStart) || [];
+      items = nodes.map((node) => nodeToTreeCategoryItem(node)).filter(Boolean);
+    }
+    const edition = buildTreeCategoryEdition({
+      workspaceId,
+      hourStart,
+      items: items || [],
+      generatedAt: now(),
+    });
+    log([
+      '[worker] hourly-category-tree',
+      `hourStart=${hourStart}`,
+      `items=${Array.isArray(items) ? items.length : 0}`,
+      `buckets=${edition.categories.filter((category) => category.id !== UNTAGGED_CATEGORY_ID).length}`,
+      `untagged=${edition.untaggedCount}`,
+      'flash=0',
+    ].join(' '));
+    return repository.save(workspaceId, edition);
+  }
+
   function get(workspaceId = 'local', hourStart) {
     if (!enabled) return { enabled: false, edition: null };
     if (!Number.isFinite(hourStart)) return { enabled: true, edition: null };
     return { enabled: true, edition: projectHourlyCategory(repository.get(workspaceId, hourStart)) };
   }
 
-  return Object.freeze({ generateHour, get, enabled });
+  return Object.freeze({ generateHour, publishFromTree, get, enabled });
 }

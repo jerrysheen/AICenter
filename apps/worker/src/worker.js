@@ -686,6 +686,11 @@ export function createAiCenterWorker(options = {}) {
       }
       return map;
     },
+    nodePort(workspaceId, hourStart) {
+      const startAt = Number(hourStart);
+      if (!Number.isFinite(startAt)) return [];
+      return store.repositories.informationTree.listInformation?.(workspaceId, { startAt, endAt: startAt + 3_600_000 }) || [];
+    },
     excerptPort(workspaceId, candidates) {
       const feedIds=candidates.filter((row)=>String(row.id || '').startsWith('feed:')).map((row)=>row.id.slice(5));
       const mediaIds=candidates.filter((row)=>String(row.id || '').startsWith('media:')).map((row)=>row.id.slice(6));

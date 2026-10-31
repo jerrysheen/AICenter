@@ -524,38 +524,34 @@ export function createReportJobHandlers({ reportService, briefService = null, in
         console.log(`[worker] hourly-extract aborted hourStart=${Number.isFinite(runInput.hourStart) ? runInput.hourStart : '-'} phase=${phase}`);
         return {status: 'skipped', reason: 'aborted', ...categoryFields()};
       };
-      const writeCategory = async (hourStarts, digestsForCategory) => {
-        const pending = [];
-        for (const hourStart of hourStarts || []) {
-          if (!Number.isFinite(hourStart) || categoryState.done.has(hourStart)) continue;
-          if (context?.signal?.aborted) break;
-          categoryState.done.add(hourStart);
-          pending.push(hourStart);
+      const projectCategory = async (hourStart, snapshot) => {
+        if (!hourlyCategoryEnabled(env) || typeof hourlyCategory?.publishFromTree !== 'function') return;
+        if (!Number.isFinite(hourStart) || categoryState.done.has(hourStart)) return;
+        if (context?.signal?.aborted) return;
+        categoryState.done.add(hourStart);
+        try {
+          const edition = await hourlyCategory.publishFromTree({
+            workspaceId: workspaceIdEarly,
+            hourStart,
+            snapshot: snapshot || null,
+          });
+          if (edition) categoryState.editions.push(edition);
+        } catch (error) {
+          console.error(`[worker] hourly-category-tree failed hourStart=${hourStart} message=${String(error?.message || error).slice(0, 180)}`);
         }
-        if (!pending.length) return;
-        const saved = await runHourlyCategoryAlongside({
-          env, hourlyCategory, workspaceId: workspaceIdEarly, hourStarts: pending,
-          digests: digestsForCategory, treeService, signal: context?.signal,
-        });
-        categoryState.editions.push(...saved);
       };
       const stopped = aborted('before-tree');
       if (stopped) return stopped;
-      if (Number.isFinite(runInput.hourStart)) await writeCategory([runInput.hourStart], null);
-      const stoppedAfterCategory = aborted('before-tree');
-      if (stoppedAfterCategory) return stoppedAfterCategory;
       let digests;
       try {
         digests=await informationService.generateHourlyDigests(runInput);
       } catch (error) {
-        if (!context?.signal?.aborted) await writeCategory(hourlyCategoryHourStarts(runInput, null), null);
         const stoppedOnError = aborted('tree-error');
         if (stoppedOnError) return stoppedOnError;
         throw error;
       }
       const stoppedAfterTree = aborted('after-tree');
       if (stoppedAfterTree) return stoppedAfterTree;
-      await writeCategory(hourlyCategoryHourStarts(runInput, digests), digests);
       const hourMs=3600000;
       const windows=input.hourStart!==undefined ? [{startAt:input.hourStart,endAt:input.hourStart+hourMs}] : digests.map(item=>item?.window).filter(item=>Number.isFinite(item?.startAt) && Number.isFinite(item?.endAt));
       const readingErrors=[];
@@ -570,9 +566,16 @@ export function createReportJobHandlers({ reportService, briefService = null, in
             const deferred=classificationDeferredCount(saved);
             classificationDeferred+=deferred;
             deferredByStart.set(window.startAt, deferred);
+            const snapshot = saved?.snapshot || (saved?.reason === 'empty' ? { items: [] } : null);
+            await projectCategory(window.startAt, snapshot);
           }
-          catch(error) {readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});}
+          catch(error) {
+            readingErrors.push({window,reason:String(error?.message || error).slice(0,180)});
+            await projectCategory(window.startAt, null);
+          }
         }
+      } else {
+        for (const window of windows) await projectCategory(window.startAt, null);
       }
       const workspaceId=input.workspaceId || 'local';
       const stoppedBeforeFollowUp = aborted('before-follow-up');

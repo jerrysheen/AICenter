@@ -92,17 +92,20 @@ test('no-catchup scheduled extract asks only for the latest ended hour', async (
   assert.equal(seen[0], undefined);
 });
 
-test('category is written before the tree call and is not repeated when the tree throws', async () => {
+test('a tree failure does not write a separate category edition', async () => {
   const order = [];
   const handlers = createReportJobHandlers({
     reportService: {generateDailyReport() {}},
     informationService: {async generateHourlyDigests() { order.push('tree'); throw new Error('tree down'); }},
     treeService: {},
-    hourlyCategory: {async generateHour(input) { order.push(`category:${input.hourStart}`); return {id: 'hcat', status: 'ready'}; }},
+    hourlyCategory: {
+      async generateHour(input) { order.push(`flash:${input.hourStart}`); return {id: 'hcat', status: 'ready'}; },
+      async publishFromTree(input) { order.push(`copy:${input.hourStart}`); return {id: 'hcat', status: 'ready'}; },
+    },
     env: {AI_CENTER_HOURLY_CATEGORY: '1'},
   });
   await assert.rejects(handlers[REPORT_HOURLY_JOB_TYPE]({hourStart: 20 * H, workspaceId: 'local'}, {}), /tree down/);
-  assert.deepEqual(order, [`category:${20 * H}`, 'tree']);
+  assert.deepEqual(order, ['tree']);
 });
 
 test('an aborted extract does not start another model call or follow-up', async () => {
