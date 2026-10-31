@@ -1,4 +1,24 @@
+import { localizationItemId } from '../../../domain/src/localize-texts.js';
 import { explainPrefixLookup, rowsByUrlPrefixes } from '../url-prefix-lookup.js';
+
+function hanCount(value) {
+  return (String(value || '').match(/\p{Script=Han}/gu) || []).length;
+}
+
+function bestZhTranslation(texts) {
+  let best = '';
+  let score = 0;
+  for (const text of texts) {
+    const value = String(text || '').trim();
+    const han = hanCount(value);
+    if (!han) continue;
+    if (han > score || (han === score && value.length > best.length)) {
+      score = han;
+      best = value;
+    }
+  }
+  return best;
+}
 
 // Listing/filtering indexes must not load every RSS HTML body into memory.
 const ENTRY_INDEX_COLUMNS = 'workspace_id,external_id,source_key,publisher_key,publisher_name,author_name,channel,canonical_url,title,summary,published_at,published_at_raw,content_level,content_hash,revision,status,origin_url,discovered_via_json,observed_at,body_hash,truncated,created_at,updated_at,fetch_state_json,article_kind';
@@ -490,7 +510,39 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         rows.push(...database.prepare(`SELECT external_id, title, substr(coalesce(summary, ''), 1, 400) AS excerpt
           FROM media_index_entries WHERE workspace_id = ? AND external_id IN (${marks})`).all(workspaceId, ...chunk));
       }
-      return rows.map((row) => ({ id: `media:${row.external_id}`, title: row.title || '', excerpt: row.excerpt || '' }));
+      const aliases = new Map();
+      const lookup = [];
+      for (const row of rows) {
+        const mediaId = `media:${row.external_id}`;
+        const keys = [mediaId];
+        const loc = localizationItemId(mediaId);
+        if (loc && !keys.includes(loc)) keys.push(loc);
+        aliases.set(row.external_id, keys);
+        lookup.push(...keys);
+      }
+      const translated = new Map();
+      const unique = [...new Set(lookup)];
+      for (let index = 0; index < unique.length; index += 200) {
+        const chunk = unique.slice(index, index + 200);
+        const marks = chunk.map(() => '?').join(', ');
+        const found = database.prepare(`SELECT item_id, substr(translated_text, 1, 600) AS translated_text
+          FROM feed_item_translations
+          WHERE workspace_id = ? AND target_lang = 'zh' AND translated_text != '' AND item_id IN (${marks})`)
+          .all(workspaceId, ...chunk);
+        for (const hit of found) {
+          const prev = translated.get(hit.item_id) || '';
+          const next = hit.translated_text || '';
+          if (hanCount(next) > hanCount(prev) || (hanCount(next) === hanCount(prev) && next.length > prev.length)) {
+            translated.set(hit.item_id, next);
+          }
+        }
+      }
+      return rows.map((row) => ({
+        id: `media:${row.external_id}`,
+        title: row.title || '',
+        excerpt: row.excerpt || '',
+        translation: bestZhTranslation((aliases.get(row.external_id) || []).map((key) => translated.get(key))),
+      }));
     },
     getEntries(workspaceId, externalIds) {
       const ids = [...new Set(externalIds.filter(Boolean))];
