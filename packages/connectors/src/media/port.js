@@ -7,6 +7,7 @@ import { isPublicHttpsUrl, hostAllowed } from './article-url.js';
 import { readYahooList, readYahooArticle } from './yahoo-public.js';
 import { extractZaobaoArticle, readZaobaoArticle, readZaobaoList } from './zaobao-public.js';
 import { createArxivRequestGate, readArxivCatalog } from './arxiv-api.js';
+import { createSemiRequestGate, readSemiPublicPage } from '../semianalysis-public.js';
 
 function isZaobao(entry) {
   return entry?.publisherKey === 'zaobao' || entry?.sourceKey === 'zaobaoworld';
@@ -15,6 +16,7 @@ function isZaobao(entry) {
 export function createMediaConnector({ sources = [], discoveryPublishers = [], budget = {}, timeZone = 'Asia/Shanghai', focusKeywords = [], fetchImpl, lookupImpl, readExisting, readSource, browserRuntime, now = () => Date.now(), arxivGate = null } = {}) {
   const publishers = discoveryPublishers.map(p => ({ ...p, channel: 'tech', contentAccess: 'body', transport: 'discovery', deployment: 'existing' }));
   const arxivRequests = arxivGate || createArxivRequestGate();
+  const semiRequests = createSemiRequestGate();
   return Object.freeze({ sources, publishers, budget, timeZone, focusKeywords, extractorVersion: EXTRACTOR_VERSION, redactUrl,
     matchOriginal(row) {
       if (!isPublicHttpsUrl(row.originUrl)) return null;
@@ -45,6 +47,7 @@ export function createMediaConnector({ sources = [], discoveryPublishers = [], b
     readList: entry => isZaobao(entry)
       ? readZaobaoList(entry, { fetchImpl, lookupImpl, maxBytes: budget.maxFeedBytes, now: now() })
       : readYahooList(browserRuntime,entry),
+    readSemiPage: (entry, pageUrl) => readSemiPublicPage(entry, pageUrl, { fetchImpl, lookupImpl, gate: semiRequests }),
     readVendor: (entry) => entry?.sourceKey === 'arxiv'
       ? readArxivCatalog(entry, { fetchImpl, lookupImpl, gate: arxivRequests, maxBytes: budget.maxFeedBytes })
       : Promise.resolve({ ok: false, health: 'needs_credentials', items: [], note: '没有凭证，不把产品介绍地址当成业务接口', requestCount: 0 }),

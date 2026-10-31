@@ -485,6 +485,10 @@ export function createMediaIngestionService({
     for (const key of keys) {
       const entry = mediaSource(key);
       const current = stateOf(workspaceId, key, at);
+      if (entry.sourceKey === 'semianalysis') {
+        results.push({ sourceKey: key, health: 'manual_only', status: null, requestCount: 0, items: null, note: '只接受手动公开 URL' });
+        continue;
+      }
       if (entry.transport === 'vendor_api' && !publicVendorApi(entry)) {
         const saved = mediaRepository.saveState({
           ...current,
@@ -605,6 +609,9 @@ export function createMediaIngestionService({
     if (!current.enabled) return { sourceKey: entry.sourceKey, health: 'disabled', added: 0, items: null };
     const reparse = current.ingestionPolicy !== MEDIA_INGESTION_POLICY;
     if (!reparse && !force && current.lastSyncAt && at < current.lastSyncAt + entry.refreshMinutes * 60_000) return { sourceKey: entry.sourceKey, health: 'not_due', added: 0, items: null };
+    if (entry.sourceKey === 'semianalysis') {
+      return { sourceKey: entry.sourceKey, health: 'manual_only', added: 0, items: null, note: '只接受手动公开 URL' };
+    }
     if (entry.transport === 'vendor_api' && !publicVendorApi(entry)) {
       mediaRepository.saveState({
         ...current,
@@ -856,6 +863,7 @@ export function createMediaIngestionService({
       }
       // TrendForce's owner collector has already saved the verified body or report intro.
       if (row.sourceKey === 'trendforce') { result(old.fetchStatus === 'ready' ? 'ready' : 'source_owned','skipped',{skipped:true}); continue; }
+      if (row.sourceKey === 'semianalysis') { result(old.fetchStatus === 'partial' ? 'partial' : 'manual_only', 'skipped', { skipped: true, contentLevel: row.contentLevel }); continue; }
       if (!entry || entry.contentAccess !== 'body' || !stateOf(workspaceId,row.sourceKey,at).bodyUseAcknowledged) {
         if (String(old.extractionReason || '').startsWith('full_text_deferred')) {
           result('full_text_deferred', 'skipped', { skipped: true, contentLevel: row.contentLevel });
@@ -1349,6 +1357,50 @@ export function createMediaIngestionService({
     briefForContentItem,
     listBodyCandidates,
     listEnrichmentItems,
+    async saveManualPartial(workspaceId, input) {
+      const entry = mediaSource('semianalysis');
+      if (!entry) throw new ValidationError('缺少 SemiAnalysis 媒体配置', ['sourceKey']);
+      if (!mediaPort?.readSemiPage) throw new ValidationError('SemiAnalysis 手动入口未接线', ['sourceKey']);
+      const page = await mediaPort.readSemiPage(entry, input?.url);
+      if (page.health === 'feed_refused' || page.health === 'blocked_url') {
+        throw new ValidationError(page.note || '地址不能保存', ['url']);
+      }
+      if (!page.ok || page.contentLevel === 'full') {
+        return { ok: true, saved: false, health: page.health || 'policy_skipped', status: page.status ?? null, externalId: page.externalId || null, contentLevel: 'partial', note: page.note || '' };
+      }
+      const at = now();
+      const externalId = page.externalId;
+      const previous = mediaRepository.getEntries(workspaceId, [externalId])[0];
+      const sourceUrl = page.finalUrl || String(input.url);
+      const item = { externalId, sourceUrl, title: page.title, summary: page.excerpt, publishedAt: previous?.publishedAt || at, publishedAtRaw: '' };
+      const row = entryRow(workspaceId, entry, item, { at, previous, status: 'indexed' });
+      row.contentLevel = 'partial';
+      row.truncated = true;
+      const bodyHash = sha256(page.excerpt);
+      row.bodyHash = bodyHash;
+      row.status = 'body_ready';
+      if (previous && previous.contentHash === row.contentHash && previous.contentLevel === 'partial' && previous.bodyHash === bodyHash) {
+        return { ok: true, saved: false, unchanged: true, health: 'partial', externalId, contentLevel: 'partial' };
+      }
+      const article = { text: page.excerpt, contentLevel: 'partial', truncated: true, extractorVersion: 'semianalysis-manual-1', paragraphs: [{ id: 'p0001', text: page.excerpt, kind: 'paragraph' }] };
+      const revision = (mediaRepository.listSnapshots(workspaceId, externalId).at(-1)?.revision || 0) + 1;
+      mediaRepository.atomic(() => {
+        saveMediaEntry(row);
+        mediaRepository.saveSnapshot({ workspaceId, externalId, revision, bodyHash, bodyText: page.excerpt, truncated: true, contentLevel: 'partial', observedAt: at, article });
+        mediaRepository.saveFetchState(workspaceId, externalId, {
+          ...initialFetchState(),
+          fetchStatus: 'partial',
+          extractionReason: String(page.reason || 'manual_public_excerpt').slice(0, 500),
+          extractionMethod: 'semianalysis-manual-1',
+          httpStatus: page.status ?? null,
+          finalUrl: sourceUrl.slice(0, 2048),
+          paragraphCount: 1,
+          fetchedRevision: row.revision,
+          lastAttemptAt: at,
+        });
+      });
+      return { ok: true, saved: true, health: 'partial', contentLevel: 'partial', externalId, note: page.reason || '' };
+    },
     indexExternalItems(workspaceId, descriptor, items, at = now(), { maxNew = 40 } = {}) {
       const entry = {
         sourceKey: descriptor.sourceKey,

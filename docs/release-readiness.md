@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-31 SemiAnalysis 只收媒体页粘贴的公开 URL，正文完整度是 `partial`。不抓 Newsletter RSS，不用 `content:encoded` 当全文。401、403 和付费墙记为 `policy_skipped`。同步不发请求。Research API 未接入。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-semianalysis-manual-url.md`。
+
 2026-10-31 arXiv 用官方查询 API 按 `lastUpdatedDate` 发现 cs.DC、cs.AR、cs.CL、cs.LG。摘要进媒体索引，`contentLevel` 是 `summary_only`，HTML 全文标成 `full_text_deferred:html_preferred`。来源默认关闭。许可类 vendor_api 仍然没有凭证就不请求。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。探针变绿后再打开 `arxiv`。见 `progress/2026-10-31-arxiv-media-source.md`。
 
 2026-10-31 类目小时的「还没归类」不再收成带箭头的卡片。灰字标题和要点直接列在方向卡片下面。这一小时没有已归类方向时，不写「按方向整理好了，先看要点」。页面不跟生成时的 `truncated` 走，只在画出来的条数少于 `inputCount` 时写「已显示 x/N」。13 条都在列表里就不再出现「材料已截断」。窄屏（底栏还在）的小时报列表底部留出底栏高度加安全区，滚到底能看见最后一条。不改归类、不改 Worker、不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器强刷 `#report?hour=`。Worker 不用为这项重启。见 `progress/2026-10-31-hourly-category-list.md`。
