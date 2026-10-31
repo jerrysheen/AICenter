@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createStore } from '../packages/database/src/index.js';
+import { localizationItemId } from '../packages/domain/src/localize-texts.js';
 import { treeCatalog } from '../packages/domain/src/information-tree-policy.js';
 import { resolveHarnessLlm } from '../packages/harness/src/llm-route.js';
 import {
@@ -283,6 +284,124 @@ test('untagged fill uses stored gemma Chinese and does not keep a clipped Englis
     const last = untagged.events.find((event) => event.sourceIds.includes(`feed:${saved[8].id}`));
     assert.equal(first.bullet, saved[0].translation);
     assert.equal(last.bullet, saved[8].translation);
+  } finally { store.close(); }
+});
+
+test('media hourly category texts prefer stored Chinese and fall back to English', async () => {
+  const store = createStore(':memory:');
+  try {
+    const media = store.repositories.media;
+    const feed = store.repositories.feed;
+    const now = hour + 10;
+    function entry(externalId, title, summary) {
+      media.upsertEntry({
+        workspaceId: 'local',
+        externalId,
+        sourceKey: 'techmeme',
+        publisherKey: 'techmeme',
+        channel: 'tech',
+        canonicalUrl: `https://www.techmeme.com/${encodeURIComponent(externalId)}`,
+        title,
+        summary,
+        publishedAt: now,
+        publishedAtRaw: '',
+        contentLevel: 'discovery',
+        contentHash: createHash('sha256').update(externalId).digest('hex'),
+        revision: 1,
+        status: 'indexed',
+        observedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const zhTitle = 'Chip orders rise after a large foundry booking';
+    const enTitle = 'A plain English headline with no saved translation';
+    const longId = `techmeme:${'a'.repeat(140)}`;
+    const longTitle = 'A very long media id whose translation is stored under the localization hash';
+    entry('techmeme:zh', zhTitle, 'English excerpt about chip orders and capacity.');
+    entry('techmeme:en', enTitle, 'English only excerpt that should stay in English.');
+    entry(longId, longTitle, 'English excerpt for the hashed localization id.');
+    feed.saveTranslations([
+      {
+        workspaceId: 'local',
+        itemId: 'media:techmeme:zh',
+        targetLang: 'zh',
+        sourceHash: createHash('sha256').update(zhTitle).digest('hex'),
+        translatedText: '晶圆厂大额定单之后，芯片订单上升。',
+        engine: 'gemma',
+      },
+      {
+        workspaceId: 'local',
+        itemId: 'media:techmeme:en',
+        targetLang: 'zh',
+        sourceHash: createHash('sha256').update(enTitle).digest('hex'),
+        translatedText: 'Still an English note with no Han characters.',
+        engine: 'gemma',
+      },
+      {
+        workspaceId: 'local',
+        itemId: localizationItemId(`media:${longId}`),
+        targetLang: 'zh',
+        sourceHash: createHash('sha256').update(longTitle).digest('hex'),
+        translatedText: '这条长标识的中文标题已经译好。',
+        engine: 'gemma',
+      },
+    ]);
+    assert.notEqual(localizationItemId(`media:${longId}`), `media:${longId}`);
+    const looked = media.listHourlyCategoryTexts('local', ['techmeme:zh', 'techmeme:en', longId, 'missing']);
+    const zh = looked.find((row) => row.id === 'media:techmeme:zh');
+    const en = looked.find((row) => row.id === 'media:techmeme:en');
+    const hashed = looked.find((row) => row.id === `media:${longId}`);
+    assert.equal(looked.some((row) => row.id === 'media:missing'), false);
+    assert.equal(zh.title, zhTitle);
+    assert.match(zh.translation, /芯片订单/);
+    assert.equal(en.title, enTitle);
+    assert.equal(en.translation, '');
+    assert.match(hashed.translation, /长标识/);
+    const calls = [];
+    const service = createHourlyCategoryService({
+      repository: store.repositories.hourlyCategory,
+      candidatePort: async () => [
+        { id: 'media:techmeme:zh', title: zhTitle, eventAt: hour + 1 },
+        { id: 'media:techmeme:en', title: enTitle, eventAt: hour + 2 },
+      ],
+      excerptPort(workspaceId, candidates) {
+        const ids = candidates.filter((row) => String(row.id || '').startsWith('media:')).map((row) => row.id.slice(6));
+        return media.listHourlyCategoryTexts(workspaceId, ids);
+      },
+      catalog,
+      now: () => hour + HOUR + 5,
+      agentRuntime: {
+        async run(input) {
+          calls.push(input);
+          const payload = JSON.parse(input.message);
+          return {
+            answer: JSON.stringify({
+              categoryId: payload.category.id,
+              events: payload.items.map((row) => ({
+                bullet: 'English model sentence that should not replace a stored Chinese line',
+                sourceIds: [row.sourceId],
+              })),
+            }),
+            model: 'gemini-3.1-flash-lite',
+          };
+        },
+      },
+      log() {},
+    });
+    const edition = await service.generateHour({ workspaceId: 'local', hourStart: hour });
+    assert.equal(calls.length, 1);
+    const payload = JSON.parse(calls[0].message);
+    const sentZh = payload.items.find((row) => row.sourceId === 'media:techmeme:zh');
+    const sentEn = payload.items.find((row) => row.sourceId === 'media:techmeme:en');
+    assert.match(sentZh.title, /芯片订单/);
+    assert.equal(sentZh.title.includes(zhTitle), false);
+    assert.equal(sentEn.title, enTitle);
+    const untagged = edition.categories.find((category) => category.id === '__untagged__');
+    const zhEvent = untagged.events.find((event) => event.sourceIds.includes('media:techmeme:zh'));
+    const enEvent = untagged.events.find((event) => event.sourceIds.includes('media:techmeme:en'));
+    assert.equal(zhEvent.bullet, '晶圆厂大额定单之后，芯片订单上升。');
+    assert.equal(enEvent.bullet, enTitle);
   } finally { store.close(); }
 });
 
