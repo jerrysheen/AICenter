@@ -27,6 +27,8 @@
 
 - `progress/2026-10-31-semianalysis-manual-url.md`：SemiAnalysis 只收粘贴的公开 URL，标为部分正文。不抓 Newsletter，付费墙跳过。Research API 未接入。不新增 migration。需要重启 Web。
 
+- `progress/2026-10-31-inferencex-snapshots.md`：InferenceX 按公开 availability 和带 `model` 的 benchmarks 落独立快照。缺条件的行不入库，tokens/s 不是投资结论。定时默认关闭。migration 98。打开后需要重启 Worker；页面要重启 Web。
+
 - `progress/2026-10-31-arxiv-media-source.md`：arXiv 用官方查询 API 按 `lastUpdatedDate` 发现四类论文，摘要进媒体索引，全文标成延后。来源默认关闭。不新增 migration。只需要重启 Worker。探针变绿后再打开。
 
 - `progress/2026-10-31-hourly-category-list.md`：类目小时的「还没归类」灰字直接列出，不再默认折起。没有已归类方向时不写「按方向整理好了，先看要点」。列表条数已经盖住 `inputCount` 时不再标「材料已截断」；少列出来才写「已显示 x/N」。窄屏小时报正文底下留出底栏高度和安全区。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。

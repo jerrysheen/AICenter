@@ -5,6 +5,7 @@ import { createInformationTreeRepository } from './information-tree-repository.j
 import { createModelUsageRepository } from './model-usage-repository.js';
 import { createMediaRepository } from './media-repository.js';
 import { createComputePriceRepository } from './compute-price-repository.js';
+import { createInferencexRepository } from './inferencex-repository.js';
 import { createHardwarePriceRepository } from './hardware-price-repository.js';
 import { createKnowledgeRepository } from './knowledge-repository.js';
 import { createReportRepository } from './report-repository.js';
@@ -42,6 +43,7 @@ export function createDomainRepositories(database, emitEvent) {
     xLinks: createXLinkRepository(database),
     hardwarePrices: createHardwarePriceRepository(database, emitEvent),
     computePrices: createComputePriceRepository(database),
+    inferencex: createInferencexRepository(database),
     trading: createTradingRepository(database, emitEvent),
     etfWhale: createEtfWhaleRepository(database, emitEvent),
     eventQuotes: createEventQuoteRepository(database, emitEvent),
