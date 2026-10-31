@@ -38,9 +38,12 @@ function readerContext(performApi) {
     pageKind: 'article',
     pageId: 'media:bbcworld:story',
     bootstrapped: true,
+    trail: [],
+    navigationFrom: '',
   };
   const context = {
     state,
+    history: { state: null },
     restoredArticleRequests: new Set(),
     restoredArticleErrors: new Map(),
     restoredArticleTokens: new Map(),
@@ -73,10 +76,14 @@ function readerContext(performApi) {
     },
     renderArticlePage() { context.renders += 1; },
     leaveArticle() {},
-    document: { createElement: element },
+    document: { createElement: element, body: { dataset: { view: 'page' } } },
   };
   vm.createContext(context);
   vm.runInContext([
+    functionSource('normalizeRoute'),
+    functionSource('routeLabel'),
+    functionSource('returnTarget'),
+    functionSource('articleBackLabel'),
     functionSource('renderViewState'),
     functionSource('mediaArticleRetriable'),
     functionSource('mediaArticleReadError'),
@@ -148,6 +155,9 @@ test('a dropped media read retries once, then shows a retryable error instead of
   assert.equal(box.children[1].textContent, '网络中断，正文没有读出来。');
   assert.equal(box.children[2].textContent, '重试');
   assert.equal(box.children[3].textContent, '返回信息流');
+  context.history.state = { aiCenterPrevious: '#report?hour=20' };
+  context.paintArticleReadFailure(root, 'media:techmeme:one', context.restoredArticleErrors.get('media:techmeme:one'));
+  assert.equal(root.children[0].children[3].textContent, '返回简报');
 });
 
 test('a missing media article does not retry and a hung read can still be retried', async () => {
