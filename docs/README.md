@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-31-article-back-reload.md`：从小时报打开原文后整页重载，站内返回仍回到 `#report?hour=N`，按钮保持「返回简报」。没有来源时文案和去向都是信息流。不新增 migration。需要重启 Web。
+
 - `progress/2026-10-31-article-back-referrer.md`：从 `#report?hour=N` 打开原文后，站内返回回到这一小时，按钮写「返回简报」。从信息流打开仍回到信息流。不新增 migration。需要重启 Web。
 
 - `progress/2026-10-31-semianalysis-manual-url.md`：SemiAnalysis 只收粘贴的公开 URL，标为部分正文。不抓 Newsletter，付费墙跳过。Research API 未接入。不新增 migration。需要重启 Web。

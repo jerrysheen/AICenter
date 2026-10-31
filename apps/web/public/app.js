@@ -369,6 +369,7 @@ const state = {
   pageId: '',
   authorView: true,
   trail: [],
+  articleReferrerLive: false,
   originalBodies: {},
   officialBodies: {},
   articleAnalysis: {},
@@ -1173,6 +1174,16 @@ function openPage(kind, id = '', { back = false } = {}) {
 }
 
 function goBack() {
+  const onArticle = document.body.dataset.view === 'page' && state.pageKind === 'article';
+  // 整页重载后 history.state 里可能还有来源，但 history.back() 已经对不上那一页。
+  // 这一次文档里没有重新点开过文章时，按记下的地址走，避免文案是简报、页面却落到信息流。
+  if (onArticle && !state.articleReferrerLive) {
+    const referrer = articleReferrerHash();
+    if (referrer) {
+      setView(normalizeRoute(referrer), { back: true });
+      return;
+    }
+  }
   const target = history.state?.aiCenterPrevious;
   if (target) {
     state.trail.pop();
@@ -1198,7 +1209,8 @@ function returnTarget() {
     const pageFallback = state.pageKind === 'article' ? 'feed'
       : state.pageKind === 'podcast' ? 'podcasts'
         : state.pageKind === 'source' && state.pageId === 'bilibili' ? 'tools' : 'sources';
-    return normalizeRoute(state.navigationFrom || history.state?.aiCenterPrevious || state.trail.at(-1) || pageFallback);
+    const remembered = state.pageKind === 'article' ? articleReferrerHash() : '';
+    return normalizeRoute(state.navigationFrom || remembered || history.state?.aiCenterPrevious || state.trail.at(-1) || pageFallback);
   }
   if (view === 'sources') return 'sources';
   if (view === 'ask') return 'ask';
@@ -1209,6 +1221,58 @@ function returnTarget() {
 
 function articleBackLabel() {
   return `返回${routeLabel(returnTarget())}`;
+}
+
+function readStoredArticleReferrer() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('ai-center.article-referrer') || 'null');
+    const article = String(saved?.article || '');
+    const from = String(saved?.from || '');
+    if (!article.startsWith('#article/') || !from.startsWith('#')) return null;
+    return { article, from };
+  } catch {
+    return null;
+  }
+}
+
+function storeArticleReferrer(articleHash, fromHash) {
+  const article = String(articleHash || '');
+  const from = String(fromHash || '');
+  if (!article.startsWith('#article/') || !from.startsWith('#') || article === from) return;
+  state.articleReferrerLive = true;
+  try {
+    sessionStorage.setItem('ai-center.article-referrer', JSON.stringify({ article, from }));
+  } catch {
+    // 无 sessionStorage 时仍用当前文档里的历史状态。
+  }
+}
+
+function articleReferrerHash() {
+  let current = '';
+  try { current = String(location.hash || ''); } catch { current = ''; }
+  const entry = history.state;
+  if (entry && typeof entry === 'object' && entry.aiCenterPrevious && (!entry.hash || entry.hash === current)) {
+    return String(entry.aiCenterPrevious);
+  }
+  const saved = readStoredArticleReferrer();
+  if (saved && saved.article === current) return saved.from;
+  return '';
+}
+
+function rememberRestoredArticleReferrer() {
+  if (state.articleReferrerLive) return;
+  let article = '';
+  try { article = String(location.hash || ''); } catch { return; }
+  if (!article.startsWith('#article/')) return;
+  const entry = history.state;
+  const from = entry && typeof entry === 'object' && entry.aiCenterPrevious && (!entry.hash || entry.hash === article)
+    ? String(entry.aiCenterPrevious) : '';
+  if (!from.startsWith('#')) return;
+  try {
+    sessionStorage.setItem('ai-center.article-referrer', JSON.stringify({ article, from }));
+  } catch {
+    // 记不住时，这一次重载仍用 history.state 里的来源。
+  }
 }
 
 function hashFromAbsoluteUrl(url) {
@@ -1240,6 +1304,7 @@ function rememberArticleHashReferrer(event, fromHistory = false) {
   } catch {
     return '';
   }
+  storeArticleReferrer(next, previous);
   return previous;
 }
 
@@ -1535,8 +1600,14 @@ function setView(name, options = {}) {
                     ? podcastsHash()
                     : `#${view}`;
   if (location.hash !== nextHash) {
+    const recordPrevious = !options.fromHistory && !options.back && !options.replace;
+    const sameArticle = nextHash.startsWith('#article/')
+      && history.state?.aiCenterPrevious
+      && (!history.state.hash || history.state.hash === location.hash || history.state.hash === nextHash);
     const entry = { ...(options.fromHistory ? history.state : {}), aiCenter: true, hash: nextHash,
-      ...(!options.fromHistory && !options.back && !options.replace ? { aiCenterPrevious: previousHash } : {}) };
+      ...(recordPrevious ? { aiCenterPrevious: previousHash } : {}),
+      ...(!recordPrevious && options.replace && sameArticle ? { aiCenterPrevious: history.state.aiCenterPrevious } : {}) };
+    if (recordPrevious && nextHash.startsWith('#article/')) storeArticleReferrer(nextHash, previousHash);
     if (options.fromHistory || options.back || options.replace) history.replaceState(entry, '', `${location.pathname}${location.search}${nextHash}`);
     else history.pushState(entry, '', `${location.pathname}${location.search}${nextHash}`);
   }
@@ -10813,6 +10884,7 @@ function scheduleXLinkArticleWatch(post) {
 }
 
 function renderArticlePage() {
+  rememberRestoredArticleReferrer();
   articleReadPosition().capture();
   if (!mediaModules || !feedLikeReady) {
     Promise.all([ensureMediaFeed(), ensureFeedLike()]).then(() => {
