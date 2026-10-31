@@ -12,7 +12,7 @@ const bbcHtml=`<link rel="canonical" href="https://www.bbc.com/news/articles/sha
 const port=createMediaConnector(config);
 
 test('expanded Instance catalog is bounded and old configurations remain compatible',()=>{
-  assert.equal(MediaConfigSchema.parse(config).sources.length,41);
+  assert.equal(MediaConfigSchema.parse(config).sources.length,42);
   assert.equal(MediaConfigSchema.parse({version:1,sources:[]}).budget.maxActiveSources,6);
   assert.equal(MediaConfigSchema.safeParse({...config,budget:{...config.budget,maxActiveSources:16}}).success,true);
   assert.equal(MediaConfigSchema.safeParse({...config,budget:{...config.budget,maxActiveSources:25}}).success,false);
