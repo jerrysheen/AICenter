@@ -9,6 +9,7 @@ import { resolveHarnessLlm } from '../packages/harness/src/llm-route.js';
 import {
   HOURLY_CATEGORY_TASK,
   bucketCategoryItems,
+  buildTreeCategoryEdition,
   censusCategoryTags,
   coverCategoryEvents,
   categorySourceHref,
@@ -509,6 +510,100 @@ test('each non-empty bucket gets one hourly-category-brief call', async () => {
   } finally { store.close(); }
 });
 
+test('category edition copies the tree reading titles and directions and does not call Flash', async () => {
+  const items = [
+    { sourceId: 'media:openai', title: 'OpenAI 完成新一轮融资，估值下调。', readingDirectionName: '产业个股', disposition: 'hit', firstIngestedAt: hour + 3 },
+    { sourceId: 'media:binance', title: '朝鲜黑客被指参与币安被盗。', readingDirectionName: '地缘政治', disposition: 'hit', firstIngestedAt: hour + 1 },
+    { sourceId: 'media:poland', title: '波兰宪法法院庭长被停职引发对峙。', readingDirectionName: '地缘政治', disposition: 'miss', firstIngestedAt: hour + 4 },
+    { sourceId: 'media:kabila', title: '刚果（金）前总统卡比拉出任叛军领导人。', readingDirectionName: '地缘政治', disposition: 'hit', firstIngestedAt: hour + 2 },
+    { sourceId: 'media:english', title: 'A plain English line the tree also kept in English', readingDirectionName: '待分类', disposition: 'miss', firstIngestedAt: hour + 5 },
+    { sourceId: 'media:noise', title: '不进刊。', readingDirectionName: '金融', disposition: 'out-of-scope', firstIngestedAt: hour + 6 },
+  ];
+  const edition = buildTreeCategoryEdition({ workspaceId: 'local', hourStart: hour, items, generatedAt: hour + HOUR });
+  assert.equal(edition.status, 'ready');
+  assert.deepEqual(edition.categories.map((category) => category.id), ['industry', 'geopolitics', '__untagged__']);
+  const industry = edition.categories.find((category) => category.id === 'industry');
+  assert.equal(industry.label, '产业个股');
+  assert.equal(industry.events[0].bullet, 'OpenAI 完成新一轮融资，估值下调。');
+  assert.equal(industry.truncated, false);
+  const geo = edition.categories.find((category) => category.id === 'geopolitics');
+  assert.equal(geo.label, '地缘政治');
+  assert.deepEqual(geo.events.map((event) => event.bullet), [
+    '朝鲜黑客被指参与币安被盗。',
+    '刚果（金）前总统卡比拉出任叛军领导人。',
+    '波兰宪法法院庭长被停职引发对峙。',
+  ]);
+  const untagged = edition.categories.find((category) => category.id === '__untagged__');
+  assert.deepEqual(untagged.events.map((event) => event.sourceIds[0]), ['media:english']);
+  assert.equal(untagged.events[0].bullet, 'A plain English line the tree also kept in English');
+  assert.equal(JSON.stringify(edition).includes('Suited and booted'), false);
+  const many = buildTreeCategoryEdition({
+    workspaceId: 'local',
+    hourStart: hour,
+    items: Array.from({ length: 81 }, (_, index) => ({
+      sourceId: `feed:${index}`,
+      title: `第${index}条中文`,
+      readingDirectionName: '金融',
+      disposition: 'hit',
+      firstIngestedAt: hour + index,
+    })),
+    generatedAt: hour + HOUR,
+  });
+  const finance = many.categories.find((category) => category.id === 'finance');
+  assert.equal(finance.inputCount, 81);
+  assert.equal(finance.events.length, 80);
+  assert.equal(finance.truncated, true);
+  const store = createStore(':memory:');
+  try {
+    let flashes = 0;
+    const service = createHourlyCategoryService({
+      repository: store.repositories.hourlyCategory,
+      nodePort() {
+        return [{
+          sourceId: 'media:stock',
+          title: 'OpenAI因AI板块抛售调整新一轮融资。',
+          eventAt: hour + 1,
+          readingClassification: { primaryDirection: 'industry', subjectKind: 'company_event', status: 'classified', domainTagIds: [] },
+        }];
+      },
+      agentRuntime: { async run() { flashes += 1; throw new Error('should not run'); } },
+      now: () => hour + HOUR + 5,
+      log() {},
+    });
+    const saved = await service.publishFromTree({ workspaceId: 'local', hourStart: hour, snapshot: null });
+    assert.equal(flashes, 0);
+    assert.equal(saved.categories[0].id, 'industry');
+    assert.equal(saved.categories[0].events[0].bullet, 'OpenAI因AI板块抛售调整新一轮融资。');
+    assert.equal(saved.untaggedCount, 0);
+    const held = await service.publishFromTree({
+      workspaceId: 'local',
+      hourStart: hour,
+      snapshot: { items: [] },
+    });
+    assert.equal(held.status, 'empty');
+    assert.equal(flashes, 0);
+  } finally { store.close(); }
+});
+
+test('an empty reading hour writes an empty category instead of a second bucket pass', async () => {
+  const seen = [];
+  const digest = { id: 'edition-1', status: 'empty', published: true, window: { startAt: hour, endAt: hour + HOUR }, pendingIds: [] };
+  await createReportJobHandlers({
+    reportService: { generateDailyReport() {} },
+    informationService: { async generateHourlyDigests() { return [digest]; } },
+    treeService: {},
+    readingHour: { enabled: true, async scoreWindow() { return { published: false, reason: 'empty' }; } },
+    hourlyCategory: {
+      async publishFromTree(input) {
+        seen.push(input.snapshot);
+        return { id: `hcat:${input.hourStart}`, status: 'empty' };
+      },
+    },
+    env: { AI_CENTER_HOURLY_CATEGORY: '1' },
+  })[REPORT_HOURLY_JOB_TYPE]({ workspaceId: 'local', hourStart: hour }, {});
+  assert.deepEqual(seen, [{ items: [] }]);
+});
+
 test('hourly category flag off keeps the tree hour and does not call Flash', async () => {
   assert.equal(hourlyCategoryEnabled({}), false);
   assert.equal(hourlyCategoryEnabled({ AI_CENTER_HOURLY_CATEGORY: '0' }), false);
@@ -532,16 +627,33 @@ test('hourly category flag off keeps the tree hour and does not call Flash', asy
   assert.equal(Object.hasOwn(off, 'categoryEditionIds'), false);
 
   order.length = 0;
+  categoryCalls.length = 0;
+  const snapshot = {
+    items: [{
+      sourceId: 'feed:openai',
+      title: 'OpenAI 完成新一轮融资。',
+      readingDirectionName: '产业个股',
+      disposition: 'hit',
+    }],
+  };
   const on = await createReportJobHandlers({
     reportService: { generateDailyReport() {} },
     informationService: { async generateHourlyDigests() { order.push('tree'); return [digest]; } },
     treeService: {},
-    readingHour: { enabled: true, async scoreWindow() { order.push('reading'); return {}; } },
-    hourlyCategory: { async generateHour(input) { order.push('category'); categoryCalls.push(input); return { id: `hcat:${input.hourStart}`, status: 'ready' }; } },
+    readingHour: { enabled: true, async scoreWindow() { order.push('reading'); return { snapshot }; } },
+    hourlyCategory: {
+      async publishFromTree(input) {
+        order.push('category');
+        categoryCalls.push(input);
+        return { id: `hcat:${input.hourStart}`, status: 'ready' };
+      },
+    },
     env: { AI_CENTER_HOURLY_CATEGORY: '1' },
   })[REPORT_HOURLY_JOB_TYPE]({ workspaceId: 'local', hourStart: hour }, {});
-  assert.deepEqual(order, ['category', 'tree', 'reading']);
-  assert.deepEqual(categoryCalls, [{ workspaceId: 'local', hourStart: hour }]);
+  assert.deepEqual(order, ['tree', 'reading', 'category']);
+  assert.equal(categoryCalls.length, 1);
+  assert.equal(categoryCalls[0].hourStart, hour);
+  assert.equal(categoryCalls[0].snapshot.items[0].title, 'OpenAI 完成新一轮融资。');
   assert.deepEqual(on.categoryEditionIds, [`hcat:${hour}`]);
 
   const failed = [];
@@ -549,10 +661,13 @@ test('hourly category flag off keeps the tree hour and does not call Flash', asy
     reportService: { generateDailyReport() {} },
     informationService: { async generateHourlyDigests() { throw new Error('tree down'); } },
     treeService: {},
-    hourlyCategory: { async generateHour(input) { failed.push(input); return { id: 'hcat', status: 'ready' }; } },
+    hourlyCategory: {
+      async generateHour(input) { failed.push(input); return { id: 'hcat', status: 'ready' }; },
+      async publishFromTree() { failed.push('copy'); },
+    },
     env: { AI_CENTER_HOURLY_CATEGORY: '1' },
   })[REPORT_HOURLY_JOB_TYPE]({ workspaceId: 'local', hourStart: hour }, {}), /tree down/);
-  assert.deepEqual(failed, [{ workspaceId: 'local', hourStart: hour }]);
+  assert.deepEqual(failed, []);
 });
 
 test('category brief reuses the hourly Flash route and does not replace article normalize', () => {

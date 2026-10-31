@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-31-hourly-category-tree-reuse.md`：类目小时不再另打分类模型，也不再按 Gemma 标签分桶。整点在信息树和阅读分类之后，把这一小时阅读稿里的中文标题和方向抄进类目刊期。树里已是金融、产业个股、科技与AI、地缘政治的条目不再进未归类。06 点和 10 点选择器对准的就是那一小时，刊期是 empty，不是读错窗口，也不是失败回落到别的小时。不打开失败补跑。不新增 migration。只需要重启 Worker。已经 ready 的 09、11、12、13 点要各 POST 一次那一个小时才会改写。
+
 - `progress/2026-10-31-brief-first-packet.md`：打开 `#report`、小时报或日报时，第一笔是这一小时的阅读稿或这一期日报，不再先拉 7 日 `information=1`。7 日刊期索引和阅读索引在这一份之后再补。本期材料只按当前窗口取信息索引。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
 
 - `progress/2026-10-31-hourly-category-media-zh.md`：类目小时的媒体要点优先用 `feed_item_translations` 里已有的中文，键是 `media:{externalId}`，超长标识再用和信息流相同的本地化哈希。没有译文时仍用英文。不新开翻译，不打开失败补跑。不新增 migration。只需要重启 Worker。已经落库的刊期不自动重写；要改某一小时，用现有的 `POST /api/v1/reports/hourly/generate` 单独重跑，不要成批补历史。
