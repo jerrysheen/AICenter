@@ -69,6 +69,26 @@ function syncCategoryLead(slot, visible) {
   if (lead) lead.hidden = !visible;
 }
 
+function shownMaterialCount(category) {
+  let count = 0;
+  for (const event of category.events || []) {
+    const links = (event.links || []).filter((link) => link && (link.href || link.sourceId));
+    if (links.length) {
+      count += links.length;
+      continue;
+    }
+    const sourceIds = Array.isArray(event.sourceIds) ? event.sourceIds.filter(Boolean) : [];
+    count += sourceIds.length || 1;
+  }
+  return count;
+}
+
+function displayGapNote(category, total) {
+  const shown = shownMaterialCount(category);
+  if (!total || shown >= total) return '';
+  return `已显示 ${shown}/${total}`;
+}
+
 function appendCategoryEvents(block, category) {
   const events = category.events || [];
   if (!events.length) {
@@ -106,19 +126,16 @@ export function paintHourlyCategory(slot, edition) {
     slot.append(node('p', 'hourly-category-empty', '本小时暂无入料'));
     return slot;
   }
-  syncCategoryLead(slot, true);
+  const tagged = categories.filter((category) => category.id !== '__untagged__');
+  syncCategoryLead(slot, tagged.length > 0);
   for (const category of categories) {
     const untagged = category.id === '__untagged__';
     const count = categoryCount(category);
-    const block = node(untagged ? 'details' : 'section', untagged ? 'hourly-category-block is-untagged' : 'hourly-category-block');
-    if (untagged) block.open = false;
-    const heading = node(
-      untagged ? 'summary' : 'h2',
-      'hourly-category-heading',
-      untagged ? `还没归类 · ${count}` : (category.label || category.id || ''),
-    );
+    const block = node('section', untagged ? 'hourly-category-block is-untagged' : 'hourly-category-block');
+    const heading = node('h2', 'hourly-category-heading', untagged ? `还没归类 · ${count}` : (category.label || category.id || ''));
     if (!untagged && count) heading.append(node('span', 'hourly-category-count', String(count)));
-    if (category.truncated) heading.append(node('span', 'hourly-category-note', '材料已截断'));
+    const gap = displayGapNote(category, count);
+    if (gap) heading.append(node('span', 'hourly-category-note', gap));
     block.append(heading);
     appendCategoryEvents(block, category);
     slot.append(block);

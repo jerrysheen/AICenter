@@ -729,7 +729,8 @@ test('category blocks render bullets and article links', () => {
   });
   assert.equal(slot.children[0].children[0].textContent, 'AI');
   assert.equal(slot.children[0].children[0].children[0].textContent, '1');
-  assert.match(slot.children[0].children[0].children[1].textContent, /材料已截断/);
+  assert.equal(slot.children[0].children[0].children.length, 1);
+  assert.equal(elementsByClass(slot, 'hourly-category-note').length, 0);
   const bullet = slot.children[0].children[1].children[0].children[0];
   assert.equal(bullet.textContent, '模型公布新接口。');
   assert.equal(bullet.children[0].href, '#article/feed:abc');
@@ -759,11 +760,13 @@ test('category blocks render bullets and article links', () => {
   });
   assert.equal(mixed.children[0].children[0].textContent, 'AI');
   assert.equal(mixed.children[0].children[0].children[0].textContent, '5');
-  assert.equal(mixed.children[1].tag, 'details');
-  assert.equal(mixed.children[1].open, false);
+  assert.equal(mixed.children[1].tag, 'section');
+  assert.equal(mixed.children[1].open, undefined);
   assert.match(mixed.children[1].className, /is-untagged/);
   assert.equal(mixed.children[1].children[0].textContent, '还没归类 · 31');
-  assert.equal(mixed.children[1].children[0].children.length, 0);
+  assert.equal(mixed.children[1].children[0].children.length, 1);
+  assert.equal(mixed.children[1].children[0].children[0].textContent, '已显示 2/31');
+  assert.equal(mixed.children[1].children[0].children[0].className, 'hourly-category-note');
   const pills = elementsByClass(mixed.children[1], 'hourly-category-link');
   assert.deepEqual(pills.map((pill) => pill.textContent), ['原文 1', '原文 2']);
   assert.equal(pills[0].parentElement.className, 'hourly-category-bullet');
@@ -774,6 +777,35 @@ test('category blocks render bullets and article links', () => {
   paintHourlyCategory(quiet, { status: 'ready', categories: [] });
   assert.equal(quiet.hidden, false);
   assert.equal(quiet.children[0].textContent, '本小时暂无入料');
+  const covered = createElement('section');
+  paintHourlyCategory(covered, {
+    status: 'ready',
+    categories: [{
+      id: '__untagged__',
+      label: '待标注',
+      inputCount: 13,
+      truncated: true,
+      events: Array.from({ length: 13 }, (_, index) => ({
+        bullet: `材料 ${index + 1}`,
+        links: [{ sourceId: `feed:${index}`, href: `#article/feed:${index}` }],
+      })),
+    }],
+  });
+  assert.equal(covered.children[0].tag, 'section');
+  assert.equal(elementsByClass(covered, 'hourly-category-event').length, 13);
+  assert.equal(elementsByClass(covered, 'hourly-category-note').length, 0);
+  const short = createElement('section');
+  paintHourlyCategory(short, {
+    status: 'ready',
+    categories: [{
+      id: 'macro',
+      label: '宏观',
+      inputCount: 4,
+      truncated: true,
+      events: [{ bullet: '只写出一条。', links: [{ href: '#article/feed:m' }] }],
+    }],
+  });
+  assert.equal(elementsByClass(short, 'hourly-category-note')[0].textContent, '已显示 1/4');
 });
 
 test('hourly category observe log records comparison fields and does not add a model call', async () => {
@@ -931,6 +963,20 @@ test('dual-run hourly page shows both sections only when the flag is on', () => 
   assert.equal(elementsByClass(flagged, 'hourly-dual-tree')[0].open, false);
   const lead = elementsByClass(flagged, 'hourly-category-lead')[0];
   assert.equal(lead.textContent, '按方向整理好了，先看要点');
+  assert.equal(lead.hidden, false);
+  paintHourlyCategory(laid.categorySlot, {
+    status: 'ready',
+    categories: [{
+      id: '__untagged__',
+      label: '待标注',
+      inputCount: 4,
+      events: [{ bullet: '还没分到方向。', links: [{ href: '#article/feed:u' }] }],
+    }],
+  });
+  assert.equal(lead.hidden, true);
+  assert.equal(elementsByClass(flagged, 'hourly-category-block')[0].tag, 'section');
+  assert.match(elementsByClass(flagged, 'hourly-category-block')[0].className, /is-untagged/);
+  paintHourlyCategory(laid.categorySlot, edition);
   assert.equal(lead.hidden, false);
   assert.equal(flagged.children[0].textContent, '今天');
   assert.equal(elementText(elementsByClass(flagged, 'hourly-dual-tree')[0]).includes('信息树里的这一小时'), true);
