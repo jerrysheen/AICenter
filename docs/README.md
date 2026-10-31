@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-31-hourly-category-media-zh.md`：类目小时的媒体要点优先用 `feed_item_translations` 里已有的中文，键是 `media:{externalId}`，超长标识再用和信息流相同的本地化哈希。没有译文时仍用英文。不新开翻译，不打开失败补跑。不新增 migration。只需要重启 Worker。已经落库的刊期不自动重写；要改某一小时，用现有的 `POST /api/v1/reports/hourly/generate` 单独重跑，不要成批补历史。
+
 - `progress/2026-10-30-hourly-extract-backlog.md`：`report.hourly.extract` 超时或失败后释放 running，旧整点不再堵住后面的小时。失败补跑仍关闭。整点在补跑关闭时只跑刚结束的那一小时，类目刊期写在信息树之前。不新增 migration。只需要重启 Worker。
 
 - `progress/2026-10-30-hourly-category-zh-bullets.md`：类目小时进刊优先用 `feed_item_translations` 里已有的中文。入库时截成约 48 字并以「…」结尾的原题不再直接当 bullet。待标注没送进模型的条目走同一条补齐。不增加 Flash 次数，不打开失败补跑。不新增 migration。只需要重启 Worker。已经落库的刊期不自动重写。
