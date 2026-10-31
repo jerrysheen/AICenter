@@ -1207,6 +1207,42 @@ function returnTarget() {
   return 'tools';
 }
 
+function articleBackLabel() {
+  return `返回${routeLabel(returnTarget())}`;
+}
+
+function hashFromAbsoluteUrl(url) {
+  const raw = String(url || '');
+  const mark = raw.indexOf('#');
+  if (mark < 0) return '';
+  const hash = raw.slice(mark);
+  return hash.length > 1 ? hash : '';
+}
+
+// 小时报「原文」是地址链接。浏览器先推进一条没有上一页的历史，阅读页才收到 hashchange。
+// 不补上进来时的地址，站内返回就会落到信息流。补上之后仍走浏览器后退，小时参数留在原来那一条上。
+function rememberArticleHashReferrer(event, fromHistory = false) {
+  if (fromHistory) return '';
+  const next = String(location.hash || '');
+  if (!next.startsWith('#article/')) return '';
+  const previous = hashFromAbsoluteUrl(event?.oldURL);
+  if (!previous || previous === next) return '';
+  const current = history.state;
+  if (current && current.hash === next && current.aiCenterPrevious) return '';
+  const entry = {
+    ...(current && typeof current === 'object' ? current : {}),
+    aiCenter: true,
+    hash: next,
+    aiCenterPrevious: previous,
+  };
+  try {
+    history.replaceState(entry, '', `${location.pathname || ''}${location.search || ''}${next}`);
+  } catch {
+    return '';
+  }
+  return previous;
+}
+
 function navigateBack() {
   if(document.body.dataset.view==='page' && state.pageKind==='hardware' && state.pageId.startsWith('series/')){setView('market/global/hardware');return;}
   if (document.body.dataset.view === 'page') goBack();
@@ -10297,7 +10333,7 @@ function paintArticleReadFailure(root, itemId, failed) {
     message: failed || '正文没有读出来。',
     action: '重试',
     onAction: () => retrySavedArticle(itemId),
-    secondaryAction: '返回信息流',
+    secondaryAction: articleBackLabel(),
     onSecondary: leaveArticle,
   });
 }
@@ -10805,7 +10841,7 @@ function renderArticlePage() {
       kind: 'loading',
       title: '正在读取文章…',
       message: '正在读取正文和译文。',
-      action: '返回信息流',
+      action: articleBackLabel(),
       onAction: leaveArticle,
     });
     return;
@@ -10851,7 +10887,7 @@ function renderArticlePage() {
     const loading=!state.bootstrapped || restoredArticleRequests.has(itemId);
     renderViewState(root, { kind: loading ? 'loading' : 'empty',
       title: loading ? '正在读取文章…' : '当前未找到这篇文章',
-      message: loading?'正在查找已保存的原文快照。':'可以返回信息流查看已保存内容。', action: '返回信息流', onAction: leaveArticle });
+      message: loading?'正在查找已保存的原文快照。':`可以${articleBackLabel()}查看已保存内容。`, action: articleBackLabel(), onAction: leaveArticle });
     return;
   }
   state.dialogPost = post;
@@ -10863,7 +10899,7 @@ function renderArticlePage() {
   shell.className = 'page-article detail-shell';
   const toolbar = document.createElement('div');
   toolbar.className = 'reading-toolbar';
-  const back = createDetailAction({ iconName: 'chevron-left', label: `返回${routeLabel(returnTarget())}`, onClick: leaveArticle });
+  const back = createDetailAction({ iconName: 'chevron-left', label: articleBackLabel(), onClick: leaveArticle });
   back.className = 'reading-back';
   const settings = createDetailAction({ iconName: 'settings', label: '阅读设置', onClick: event => openReaderMenu(event.currentTarget) });
   const more = createDetailAction({ iconName: 'list', label: '更多', onClick: event => openReaderMenu(event.currentTarget) });
@@ -11135,7 +11171,7 @@ function renderArticlePage() {
     createDetailAction({ iconName: 'image', label: '分享', onClick: () => presentShareCard(postShareInput(post)) }),
     createDetailAction({ iconName: 'bookmark', label: isPostSaved(post) ? '查看灵感' : '存入灵感', onClick: () => save.click() }),
     createDetailAction({ iconName: 'list', label: '更多', onClick: event => openReaderMenu(event.currentTarget) }),
-    createDetailAction({ iconName: 'chevron-left', label: `返回${routeLabel(returnTarget())}`, onClick: leaveArticle }));
+    createDetailAction({ iconName: 'chevron-left', label: articleBackLabel(), onClick: leaveArticle }));
   const analysis = renderArticleAnalysisPanel(post);
   shell.append(toolbar, head, body);
   if (analysis) shell.append(analysis);
@@ -18041,8 +18077,16 @@ if (typeof ResizeObserver !== 'undefined') {
 restoreWebMode();
 restoreResearchMode();
 restoreAgentMode();
-window.addEventListener('hashchange', () => {
+let articleReferrerFromTraversal = false;
+window.addEventListener('popstate', () => {
+  articleReferrerFromTraversal = true;
+  queueMicrotask(() => { articleReferrerFromTraversal = false; });
+});
+window.addEventListener('hashchange', (event) => {
+  const fromTraversal = articleReferrerFromTraversal;
+  articleReferrerFromTraversal = false;
   if (!state.session) return;
+  rememberArticleHashReferrer(event, fromTraversal);
   state.trail = [];
   setView(location.hash.slice(1), { fromHistory: true });
 });

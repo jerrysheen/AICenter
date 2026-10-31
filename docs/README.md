@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-10-31-article-back-referrer.md`：从 `#report?hour=N` 打开原文后，站内返回回到这一小时，按钮写「返回简报」。从信息流打开仍回到信息流。不新增 migration。需要重启 Web。
+
 - `progress/2026-10-31-semianalysis-manual-url.md`：SemiAnalysis 只收粘贴的公开 URL，标为部分正文。不抓 Newsletter，付费墙跳过。Research API 未接入。不新增 migration。需要重启 Web。
 
 - `progress/2026-10-31-inferencex-snapshots.md`：InferenceX 按公开 availability 和带 `model` 的 benchmarks 落独立快照。缺条件的行不入库，tokens/s 不是投资结论。定时默认关闭。migration 98。打开后需要重启 Worker；页面要重启 Web。
