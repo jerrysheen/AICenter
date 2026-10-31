@@ -97,7 +97,7 @@ function routeLabel(value) {
 }
 
 // Shared read feedback. API responses remain the source of business truth.
-function renderViewState(root, { kind, title, message = '', action, onAction }) {
+function renderViewState(root, { kind, title, message = '', action, onAction, secondaryAction, onSecondary }) {
   root.dataset.loadState = kind;
   root.setAttribute('aria-busy', String(kind === 'loading'));
   if (kind === 'success') return;
@@ -106,11 +106,13 @@ function renderViewState(root, { kind, title, message = '', action, onAction }) 
   box.setAttribute('role', 'status');
   box.append(Object.assign(document.createElement('strong'), { textContent: title }));
   if (message) box.append(Object.assign(document.createElement('p'), { textContent: message }));
-  if (action && onAction) {
-    const button = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: action });
-    button.addEventListener('click', onAction);
+  const addAction = (label, handler) => {
+    const button = Object.assign(document.createElement('button'), { type: 'button', className: 'text-button', textContent: label });
+    button.addEventListener('click', handler);
     box.append(button);
-  }
+  };
+  if (action && onAction) addAction(action, onAction);
+  if (secondaryAction && onSecondary) addAction(secondaryAction, onSecondary);
   root.replaceChildren(box);
 }
 
@@ -2008,6 +2010,7 @@ function showUnpairedPage(message, pairingFailed = false, options = {}) {
   state.restoredArticles={};
   restoredArticleRequests.clear();
   restoredArticleErrors.clear();
+  restoredArticleTokens.clear();
   mediaReaderSession.clear();
   state.mediaItems = [];
   state.mediaLoading = false;
@@ -2075,6 +2078,7 @@ async function exitAndRePair() {
   state.restoredArticles={};
   restoredArticleRequests.clear();
   restoredArticleErrors.clear();
+  restoredArticleTokens.clear();
   mediaReaderSession.clear();
   const controls = [elements['exit-to-pairing'], elements['restart-pairing']];
   controls.forEach((control) => {
@@ -10180,6 +10184,52 @@ function createDetailAction({ iconName, label, primary = false, pressed = false,
 
 const restoredArticleRequests=new Set();
 const restoredArticleErrors=new Map();
+const restoredArticleTokens=new Map();
+const MEDIA_ARTICLE_READ_MS = 8_000;
+
+function mediaArticleRetriable(error) {
+  const status = Number(error?.status);
+  return !(status >= 400 && status < 500);
+}
+
+function mediaArticleReadError(error) {
+  const status = Number(error?.status);
+  if (status === 404) return '已保存文章不存在';
+  const message = String(error?.message || '').trim();
+  if (message === '请求超时，请稍后重试') return '正文读取超时，请重试。';
+  if (!message || /failed to fetch|networkerror|load failed|network request failed|http2|protocol_error/i.test(message)) {
+    return '网络中断，正文没有读出来。';
+  }
+  return message;
+}
+
+function fetchMediaArticle(externalId) {
+  const path = `/api/v1/feed/media/article?externalId=${encodeURIComponent(externalId)}`;
+  const once = () => performApi(path, { cache: 'no-store' }, MEDIA_ARTICLE_READ_MS);
+  return once().catch((error) => {
+    if (!mediaArticleRetriable(error)) throw error;
+    return once();
+  });
+}
+
+function retrySavedArticle(id) {
+  restoredArticleErrors.delete(id);
+  restoredArticleRequests.delete(id);
+  restoredArticleTokens.delete(id);
+  if (state.pageKind === 'article') renderArticlePage();
+}
+
+function paintArticleReadFailure(root, itemId, failed) {
+  renderViewState(root, {
+    kind: 'error',
+    title: '文章没有读出来',
+    message: failed || '正文没有读出来。',
+    action: '重试',
+    onAction: () => retrySavedArticle(itemId),
+    secondaryAction: '返回信息流',
+    onSecondary: leaveArticle,
+  });
+}
 function contentItemUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
@@ -10220,18 +10270,37 @@ function articleContentId(id) {
   const composed = cached?.externalId && /^(?:x|xueqiu|bilibili|trendforce|youtube)$/i.test(platform) ? `${platform}:${cached.externalId}` : '';
   return /^(?:x|xueqiu|bilibili|trendforce|youtube):[^/]+$/i.test(composed) ? composed : '';
 }
+function articleReadStillCurrent(id, token, scope) {
+  return state.session === scope && restoredArticleTokens.get(id) === token;
+}
+
 async function restoreSavedArticle(id) {
-  if(!state.session || restoredArticleRequests.has(id))return;restoredArticleRequests.add(id);
+  if(!state.session || restoredArticleRequests.has(id))return;
+  const token = {};
+  restoredArticleRequests.add(id);
+  restoredArticleTokens.set(id, token);
   const scope=state.session;
-  if(id.startsWith('media:')) {
-    try {const {item}=await api(`/api/v1/feed/media/article?externalId=${encodeURIComponent(id.slice(6))}`);if(state.session!==scope)return;
-      state.restoredArticles[id]=mediaAsItem(item);
+  const media = id.startsWith('media:');
+  let watchdog = 0;
+  try {
+    if (media) {
+      watchdog = setTimeout(() => {
+        if (restoredArticleTokens.get(id) !== token || state.session !== scope) return;
+        if (state.restoredArticles[id]?.readerLoaded || restoredArticleErrors.has(id)) return;
+        restoredArticleErrors.set(id, '正文读取超时，请重试。');
+        restoredArticleTokens.delete(id);
+        restoredArticleRequests.delete(id);
+        if (state.pageKind === 'article' && state.pageId === id) renderArticlePage();
+      }, MEDIA_ARTICLE_READ_MS * 2 + 1_000);
+      const { item } = await fetchMediaArticle(id.slice(6));
+      if (!articleReadStillCurrent(id, token, scope)) return;
+      if (!item) throw new Error('已保存文章不存在');
+      restoredArticleErrors.delete(id);
+      rememberReaderPost(id, mediaAsItem(item));
       state.mediaItems=(state.mediaItems||[]).map(row=>row.id===item.id||row.externalId===item.externalId||row.id===id?{...row,...item,detail:'full'}:row);
       if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
-    } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
-    return;
-  }
-  try {
+      return;
+    }
     let item = null;
     const directId = articleContentId(id);
     if (directId) {
@@ -10244,11 +10313,22 @@ async function restoreSavedArticle(id) {
         else item = { id: original.id, provider: original.provider, externalId: original.externalId, title: original.title, body: original.body, summary: original.summary, sourceUrl: original.sourceUrl, contentLevel: original.contentLevel, hardwareSnapshot: original.hardwareSnapshot };
       }
     }
-    if(state.session!==scope)return;
+    if (!articleReadStillCurrent(id, token, scope)) return;
     if(!item) throw new Error('原文不存在');
+    restoredArticleErrors.delete(id);
     rememberReaderPost(id, restoredArticleFromItem(id, item));
     if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
-  } catch(error) {if(state.session!==scope)return;restoredArticleErrors.set(id,error.message);if(state.pageKind==='article' && state.pageId===id)renderArticlePage();}
+  } catch(error) {
+    if (!articleReadStillCurrent(id, token, scope)) return;
+    restoredArticleErrors.set(id, media ? mediaArticleReadError(error) : (error?.message || '原文读取失败'));
+    if(state.pageKind==='article' && state.pageId===id)renderArticlePage();
+  } finally {
+    if (watchdog) clearTimeout(watchdog);
+    if (restoredArticleTokens.get(id) === token) {
+      restoredArticleTokens.delete(id);
+      restoredArticleRequests.delete(id);
+    }
+  }
 }
 async function restoreSocialArticle(id, post) {
   const resourceId = post?.resourceId;
@@ -10641,16 +10721,19 @@ function renderArticlePage() {
     ? officialFeedItems().find((item) => item.id === itemId || item.resourceId === itemId)
     : (state.restoredArticles[itemId]?.readerLoaded ? state.restoredArticles[itemId] : null);
   if (!official && !post) post = findUnifiedItem(itemId) || null;
+  const failedRead = restoredArticleErrors.get(itemId) || '';
   const needsReaderLoad = !official && Boolean(itemId) && post?.platform !== 'media'
-    && !state.restoredArticles[itemId]?.readerLoaded && !restoredArticleErrors.has(itemId);
+    && !state.restoredArticles[itemId]?.readerLoaded && !failedRead;
   if (needsReaderLoad && state.bootstrapped) restoreSavedArticle(itemId);
-  if (needsReaderLoad && !post) {
-    const failed = restoredArticleErrors.get(itemId);
-    const loading = !state.bootstrapped || !failed;
+  if (!post && (needsReaderLoad || failedRead)) {
+    if (failedRead) {
+      paintArticleReadFailure(root, itemId, failedRead);
+      return;
+    }
     renderViewState(root, {
-      kind: loading ? 'loading' : 'empty',
-      title: loading ? '正在读取文章…' : '当前未找到这篇文章',
-      message: loading ? '正在读取正文和译文。' : (failed || '可以返回信息流查看已保存内容。'),
+      kind: 'loading',
+      title: '正在读取文章…',
+      message: '正在读取正文和译文。',
       action: '返回信息流',
       onAction: leaveArticle,
     });
@@ -10666,6 +10749,10 @@ function renderArticlePage() {
       renderViewState(root, { kind: 'loading', title: '正在读取文章…', message: '正在加载正文。' });
       return;
     }
+  }
+  if (post?.platform === 'media' && !post.paragraphs?.length && itemId.startsWith('media:') && restoredArticleErrors.has(itemId) && !state.restoredArticles[itemId]?.readerLoaded && !String(post.body || '').trim()) {
+    paintArticleReadFailure(root, itemId, restoredArticleErrors.get(itemId));
+    return;
   }
   const socialBodyPending = socialArticleBodyPending(post)
     && !state.restoredArticles[itemId]?.readerLoaded
@@ -10684,8 +10771,13 @@ function renderArticlePage() {
     post = applyXLinkReady(post, xLinkRecord(post));
   }
   if (!post) {
+    const failed = restoredArticleErrors.get(itemId) || '';
+    if (failed) {
+      paintArticleReadFailure(root, itemId, failed);
+      return;
+    }
     if(state.bootstrapped && !official) restoreSavedArticle(itemId);
-    const loading=!state.bootstrapped || restoredArticleRequests.has(itemId) && !restoredArticleErrors.has(itemId);
+    const loading=!state.bootstrapped || restoredArticleRequests.has(itemId);
     renderViewState(root, { kind: loading ? 'loading' : 'empty',
       title: loading ? '正在读取文章…' : '当前未找到这篇文章',
       message: loading?'正在查找已保存的原文快照。':'可以返回信息流查看已保存内容。', action: '返回信息流', onAction: leaveArticle });

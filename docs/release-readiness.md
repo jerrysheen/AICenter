@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-31 从类目小时点「原文」进入 `#article/media:…` 时，不再停在「正在读取文章… / 正在读取正文和译文。」。正文读完后标成已读入，标题和正文按媒体阅读页显示。这次读取不进页面共享请求队列，单次 8 秒；网络中断或超时自动再试一次。仍然没有结果，或浏览器不结束这次请求，就换成「文章没有读出来」，可以重试，也可以返回信息流。类目小时的生成和媒体要点中文不改。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-article-read-loading.md`。
+
 2026-10-31 打开 `#report`、小时报或日报时，第一笔请求是这一小时的阅读稿，或这一期日报。不再先下载 7 日 `tree?view=index&information=1`。小时条用的 7 日刊期索引和 7 日阅读索引，要等这一份回来再补。打开「本期材料」只取当前这一期的信息索引，窗口最长两天。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-brief-first-packet.md`。
 
 2026-10-31 类目小时的媒体要点在已有中文时不再只用英文标题。`#254` 只让信息流按内容 id 和 `provider:externalId` 读 `feed_item_translations`。媒体侧 `listHourlyCategoryTexts` 仍只读 `media_index_entries` 的标题和摘要，所以 Techmeme 这类已经译好的 discovery 条目进刊仍是英文。现在按 `media:{externalId}` 读取已有译文；标识超过 128 字时同时认 `localizationItemId` 收成的 `h:` 哈希，和信息流同一条规则。没有汉字的译文行不当中文。没有译文时仍用英文标题或更长摘要。不计算 `media-block-v2` 段落哈希，也不为 BBC、Guardian 等还没有中文行的来源补译。不增加 Flash 次数，不打开失败补跑。信息树和日报不改。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。页面没有改，Web 不用为这项重启。已经落库的类目刊期不会自动重写。下一轮整点只写刚结束的那一小时。要改某一期已经 ready 的类目小时，用桌面 `POST /api/v1/reports/hourly/generate`，正文只带那一个 `hourStart`。每个非空桶仍会打一次类目模型。不要连续排很多小时，也不要把 `AI_CENTER_HOURLY_NO_CATCHUP` 设成 `0`。见 `progress/2026-10-31-hourly-category-media-zh.md`。
