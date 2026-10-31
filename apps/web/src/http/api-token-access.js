@@ -38,6 +38,7 @@ const EXACT_PATHS = new Set([
   '/api/market/northbound',
   '/api/v1/hardware-prices',
   '/api/v1/compute-prices',
+  '/api/v1/inferencex',
   '/api/v1/compute-prices/history',
   '/api/v1/etf-whale/overview',
   '/api/v1/etf-whale/daily',

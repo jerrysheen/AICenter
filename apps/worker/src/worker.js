@@ -106,6 +106,7 @@ import { readStoredPolymarketView } from '../../../packages/domain/src/polymarke
 import { createInvestorDiscussionJobHandlers, ensureInvestorDiscussionSchedule, investorDiscussionManifest } from '../../../packages/runtime/src/investor-discussion-job.js';
 import { ensureTrendForcePriceSchedules } from '../../../packages/runtime/src/trendforce-price-schedule.js';
 import { computePriceManifest, createComputePriceJobHandlers, ensureComputePriceSchedules } from '../../../packages/runtime/src/compute-price-job.js';
+import { createInferencexJobHandlers, ensureInferencexSchedules, inferencexManifest } from '../../../packages/runtime/src/inferencex-job.js';
 import { authorStatsManifest, createAuthorStatsJobHandlers, ensureAuthorStatsSchedule } from '../../../packages/runtime/src/author-stats-job.js';
 import { QUANT_PREPARE_JOB_TYPE, QUANT_RUN_JOB_TYPE } from '../../../packages/contracts/src/index.js';
 import { createLocalToolRegistry } from '../../../packages/runtime/src/local-tools.js';
@@ -837,6 +838,17 @@ export function createAiCenterWorker(options = {}) {
       }),
     });
   }
+  if (store.repositories.inferencex) {
+    registry.register({
+      manifest: inferencexManifest,
+      jobHandlers: options.inferencexJobHandlers || createInferencexJobHandlers({
+        repository: store.repositories.inferencex,
+        fetch: options.fetch,
+        now: options.now,
+        env,
+      }),
+    });
+  }
   if (store.repositories.investorDiscussion) {
     registry.register({
       manifest: investorDiscussionManifest,
@@ -982,6 +994,7 @@ export function createAiCenterWorker(options = {}) {
     ensureTrendForcePriceSchedules(store, env);
     ensureTwkrSchedules(store, { env, flags: twkrFlags });
     ensureComputePriceSchedules(store, env);
+    ensureInferencexSchedules(store, env);
     ensureAuthorStatsSchedule(store, env);
     ensureYoutubePodcastSchedule(store, env);
     ensureYoutubeArticleSchedule(store, env);

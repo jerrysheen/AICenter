@@ -2525,6 +2525,55 @@ migrations.push({ version: 97, name: 'hourly_category_editions', up(database) {
     );`);
 }});
 
+migrations.push({ version: 98, name: 'inferencex_snapshots', up(database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS inference_availability_snapshots (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      captured_at INTEGER NOT NULL,
+      quote_date TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      row_count INTEGER NOT NULL,
+      source_url TEXT NOT NULL,
+      rows_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_inference_availability_latest
+      ON inference_availability_snapshots(workspace_id, captured_at DESC);
+    CREATE TABLE IF NOT EXISTS inference_benchmark_observations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      snapshot_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      hardware TEXT NOT NULL,
+      framework TEXT NOT NULL,
+      precision TEXT NOT NULL,
+      isl INTEGER NOT NULL,
+      osl INTEGER NOT NULL,
+      disagg INTEGER NOT NULL,
+      spec_method TEXT NOT NULL,
+      benchmark_type TEXT NOT NULL,
+      quote_date TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      tokens_per_second TEXT,
+      citation_eligible INTEGER NOT NULL,
+      captured_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_inference_benchmark_date
+      ON inference_benchmark_observations(workspace_id, quote_date, model);
+    CREATE TABLE IF NOT EXISTS inference_source_checks (
+      workspace_id TEXT NOT NULL,
+      source_key TEXT NOT NULL,
+      last_checked_at INTEGER NOT NULL,
+      last_changed_at INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      quote_date TEXT NOT NULL,
+      status TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (workspace_id, source_key)
+    );`);
+}});
+
 
 export function backfillKnowledgeRevisionIndex(database) {
   database.exec(`
