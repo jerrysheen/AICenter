@@ -54,10 +54,10 @@ test('flash source set comes from the file, a media flag, or a full env replacem
   assert.equal(isFlashSource({feed: '7x24'}, replaced), false);
 });
 
-test('media config still parses without a flash flag and stays at 41 sources', () => {
+test('media config still parses without a flash flag and stays at 42 sources', () => {
   const config = JSON.parse(fs.readFileSync('config/media.json', 'utf8'));
   const parsed = MediaConfigSchema.parse(config);
-  assert.equal(parsed.sources.length, 41);
+  assert.equal(parsed.sources.length, 42);
   assert.equal(parsed.sources.every((source) => source.flash === false), true);
   assert.equal(MediaConfigSchema.parse({
     version: 1,

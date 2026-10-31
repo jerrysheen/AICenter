@@ -202,6 +202,7 @@ export function createMediaIngestionService({
   const MEDIA_PUBLISHERS = [...MEDIA_SOURCES, ...(mediaPort?.publishers || [])];
   const articleDedup = createArticleDedup({ mediaRepository, feedRepository, sources: MEDIA_PUBLISHERS });
   const mediaSource = key => MEDIA_PUBLISHERS.find(s => s.sourceKey === key || s.sourceAliases?.includes(key)) || null;
+  const publicVendorApi = entry => entry?.transport === 'vendor_api' && entry.sourceKey === 'arxiv' && typeof mediaPort?.readVendor === 'function';
   function saveMediaEntry(entry) {
     const dedupKey = articleDedup.keyFor({
       url: entry.canonicalUrl,
@@ -484,7 +485,7 @@ export function createMediaIngestionService({
     for (const key of keys) {
       const entry = mediaSource(key);
       const current = stateOf(workspaceId, key, at);
-      if (entry.transport === 'vendor_api') {
+      if (entry.transport === 'vendor_api' && !publicVendorApi(entry)) {
         const saved = mediaRepository.saveState({
           ...current,
           health: 'needs_credentials',
@@ -492,6 +493,29 @@ export function createMediaIngestionService({
           updatedAt: at,
         });
         results.push({ sourceKey: key, health: saved.health, status: null, requestCount: 0, items: null });
+        continue;
+      }
+      if (publicVendorApi(entry)) {
+        const fetched = await mediaPort.readVendor(entry);
+        requestCount += Number(fetched.requestCount) || 0;
+        const verified = Boolean(fetched.ok && fetched.items?.length);
+        const health = verified ? 'ready' : (fetched.health || 'empty');
+        mediaRepository.saveState({
+          ...current,
+          hostDirectVerified: verified || current.hostDirectVerified,
+          health,
+          healthDetail: fetched.note || '',
+          lastProbe: {
+            sourceKey: key,
+            status: fetched.status ?? null,
+            health,
+            itemCount: fetched.items?.length ?? null,
+            observedAt: at,
+            finalUrl: entry.probeUrl,
+          },
+          updatedAt: at,
+        });
+        results.push({ sourceKey: key, health, status: fetched.status ?? null, requestCount: fetched.requestCount || 0, itemCount: fetched.items?.length ?? null, items: null });
         continue;
       }
       if (entry.transport === 'existing_adapter') {
@@ -546,7 +570,8 @@ export function createMediaIngestionService({
     const current = stateOf(workspaceId, sourceKey, at);
     const existingBody = entry.transport === 'existing_adapter' && (entry.contentAccess === 'body' || entry.sourceKey === 'trendforce');
     const browserList = parsedHtmlList(entry);
-    if (!existingBody && (entry.deployment !== 'first' || entry.transport !== 'rss' && !browserList)) {
+    const publicApi = publicVendorApi(entry);
+    if (!existingBody && !publicApi && (entry.deployment !== 'first' || entry.transport !== 'rss' && !browserList)) {
       return { ok: false, health: entry.transport === 'vendor_api' ? 'needs_credentials' : 'not_in_initial_batch' };
     }
     if (!existingBody && !current.hostDirectVerified) return { ok: false, health: 'needs_host_probe' };
@@ -580,7 +605,7 @@ export function createMediaIngestionService({
     if (!current.enabled) return { sourceKey: entry.sourceKey, health: 'disabled', added: 0, items: null };
     const reparse = current.ingestionPolicy !== MEDIA_INGESTION_POLICY;
     if (!reparse && !force && current.lastSyncAt && at < current.lastSyncAt + entry.refreshMinutes * 60_000) return { sourceKey: entry.sourceKey, health: 'not_due', added: 0, items: null };
-    if (entry.transport === 'vendor_api') {
+    if (entry.transport === 'vendor_api' && !publicVendorApi(entry)) {
       mediaRepository.saveState({
         ...current,
         health: 'needs_credentials',
@@ -589,15 +614,27 @@ export function createMediaIngestionService({
       });
       return { sourceKey: entry.sourceKey, health: 'needs_credentials', added: 0, items: null };
     }
+    const vendorRead = publicVendorApi(entry) ? await mediaPort.readVendor(entry) : null;
+    if (vendorRead && !vendorRead.ok) {
+      mediaRepository.saveState({
+        ...current,
+        health: vendorRead.health || 'network',
+        healthDetail: vendorRead.note || '',
+        updatedAt: at,
+      });
+      return { sourceKey: entry.sourceKey, health: vendorRead.health || 'network', added: 0, items: null };
+    }
     if (entry.transport === 'existing_adapter' && !mediaPort?.readExisting) {
       return { sourceKey: entry.sourceKey, health: 'existing_adapter', added: 0, items: null };
     }
     const browserList = parsedHtmlList(entry);
-    if (entry.transport !== 'rss' && entry.transport !== 'existing_adapter' && !browserList) {
+    if (!vendorRead && entry.transport !== 'rss' && entry.transport !== 'existing_adapter' && !browserList) {
       mediaRepository.saveState({ ...current, health: 'needs_parser', healthDetail: '栏目页还没有验收过的列表解析', updatedAt: at });
       return { sourceKey: entry.sourceKey, health: 'needs_parser', added: 0, items: null };
     }
-    const existing = entry.transport === 'existing_adapter' ? await mediaPort.readExisting(entry) : browserList ? await mediaPort.readList(entry) : null;
+    const existing = vendorRead
+      ? { ok: true, health: vendorRead.health || 'ready', items: vendorRead.items || [], note: vendorRead.note || '' }
+      : entry.transport === 'existing_adapter' ? await mediaPort.readExisting(entry) : browserList ? await mediaPort.readList(entry) : null;
     const fetched = existing ? { ok: existing.ok, health: existing.health, body: JSON.stringify(existing.items), etag: '', lastModified: '' } : await fetchAllowlisted({
       url: entry.probeUrl,
       allowedHosts: entry.allowedHosts,
@@ -691,7 +728,7 @@ export function createMediaIngestionService({
       if (!previous) {
         const article = incomingArticle(entry, item);
         const match = articleDedup.find(workspaceId, article, { ignoreMediaIds: [item.externalId] });
-        if (match) {
+        if (match && !(String(item.externalId).startsWith('arxiv:') && match.externalId !== item.externalId)) {
           articleDedup.fill(match, article);
           mergedMediaId.set(item.externalId, match.kind === 'media' ? match.externalId : '');
           continue;
@@ -709,6 +746,16 @@ export function createMediaIngestionService({
       }));
       if (item.feedBodyHtml) mediaRepository.saveFeedBody(workspaceId, item.externalId, item.feedBodyHtml);
       if(gate) saveMediaGate(workspaceId,gateRow,{text:item.summary || '',truncated:false},indexHash(item),gate);
+      if (item.fullText?.status === 'deferred') {
+        mediaRepository.saveFetchState(workspaceId, item.externalId, {
+          ...initialFetchState(),
+          fetchStatus: 'deferred',
+          extractionReason: String(item.fullText.reason || 'full_text_deferred:html_preferred').slice(0, 500),
+          extractionMethod: 'arxiv-abstract-v1',
+          finalUrl: String(item.fullText.htmlUrl || '').slice(0, 2048),
+          lastAttemptAt: at,
+        });
+      }
       });
       if (!deferred && (!previous || previous.status === 'budget_deferred')) added += 1;
     }
@@ -810,6 +857,10 @@ export function createMediaIngestionService({
       // TrendForce's owner collector has already saved the verified body or report intro.
       if (row.sourceKey === 'trendforce') { result(old.fetchStatus === 'ready' ? 'ready' : 'source_owned','skipped',{skipped:true}); continue; }
       if (!entry || entry.contentAccess !== 'body' || !stateOf(workspaceId,row.sourceKey,at).bodyUseAcknowledged) {
+        if (String(old.extractionReason || '').startsWith('full_text_deferred')) {
+          result('full_text_deferred', 'skipped', { skipped: true, contentLevel: row.contentLevel });
+          continue;
+        }
         state = { ...state, fetchStatus: 'policy_skipped', extractionReason: entry?.contentAccess === 'body' ? 'needs_license' : 'index_only' };
         mediaRepository.saveFetchState(workspaceId,row.externalId,state);
         result(state.extractionReason,'policySkipped'); continue;

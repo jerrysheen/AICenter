@@ -64,7 +64,7 @@ function articleHtml({
 
 test('zaobao world stays disabled in the macro catalog and uses the checked com entry', () => {
   const parsed = MediaConfigSchema.parse(config);
-  assert.equal(parsed.sources.length, 41);
+  assert.equal(parsed.sources.length, 42);
   assert.equal(source.enabled, false);
   assert.equal(source.channel, 'macro');
   assert.equal(source.publisher, '早报');

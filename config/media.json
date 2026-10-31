@@ -1425,6 +1425,39 @@
       "maxListCandidates": 80,
       "maxNewBodiesPerRound": 80,
       "minRequestIntervalMs": 3000
+    },
+    {
+      "enabled": false,
+      "trackingParams": [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content"
+      ],
+      "identityParams": [],
+      "redirectHosts": [
+        "arxiv.org"
+      ],
+      "articleHosts": [
+        "arxiv.org"
+      ],
+      "contentAccess": "index",
+      "sourceKey": "arxiv",
+      "publisher": "arXiv",
+      "publisherKey": "arxiv",
+      "channel": "tech",
+      "channelName": "arXiv cs.DC / cs.AR / cs.CL / cs.LG",
+      "transport": "vendor_api",
+      "probeUrl": "https://export.arxiv.org/api/query",
+      "allowedHosts": [
+        "export.arxiv.org"
+      ],
+      "refreshMinutes": 180,
+      "backfillHours": 168,
+      "detailDailyCap": null,
+      "deployment": "first",
+      "minRequestIntervalMs": 3000
     }
   ],
   "discoveryPublishers": [

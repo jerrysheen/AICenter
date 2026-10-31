@@ -72,7 +72,7 @@ test('official weekly RSS can carry a complete edition and oversized fragments r
  const port=createMediaConnector();const weekly=port.extract(`<p>${prose}</p><p>${prose}</p><img src="https://example.com/chart.png" alt="">`,{sourceKey:'ftav',fragment:true});assert.equal(weekly.contentLevel,'full');assert.equal(weekly.visualEvidenceRequired,true);
  const feed=`<rss><channel><item><title>Weekly</title><link>https://ftav.substack.com/p/synthetic</link><content:encoded><![CDATA[<p>${'x'.repeat(200001)}</p>]]></content:encoded></item></channel></rss>`;
  assert.equal(parseFeedXml(feed,config.sources.find(s=>s.sourceKey==='ftav')).items[0].feedBodyHtml,'');
- assert.equal(MediaConfigSchema.parse(config).sources.length,41);assert.equal(MediaConfigSchema.parse({version:1,sources:[]}).budget.maxActiveSources,6);
+ assert.equal(MediaConfigSchema.parse(config).sources.length,42);assert.equal(MediaConfigSchema.parse({version:1,sources:[]}).budget.maxActiveSources,6);
  assert.equal(MediaConfigSchema.safeParse({...config,budget:{...config.budget,maxActiveSources:25}}).success,false);
 });
 
