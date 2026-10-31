@@ -310,3 +310,60 @@ function monthDay(day) {
   const [, month, date] = String(day || '').split('-');
   return `${Number(month)}月${Number(date)}日`;
 }
+
+export function inferenceDisplayRows(board) {
+  return (board?.benchmarks || []).filter((row) => row?.citationEligible === true && row?.investmentUse === 'not_a_conclusion');
+}
+
+export function renderInferencePanel(root, board) {
+  if (!root) return;
+  root.replaceChildren();
+  const note = document.createElement('p');
+  note.className = 'gpu-rent-note';
+  note.textContent = '公开跑分快照。每行都带模型、硬件、框架、精度、输入长度、输出长度、是否分离、投机方法和日期。缺这些条件的不显示。tokens/s 只是该条件下的观测，不是投资结论。';
+  root.append(note);
+  const benchmarks = inferenceDisplayRows(board);
+  const availability = board?.availability || [];
+  if (!benchmarks.length && !availability.length) {
+    const empty = document.createElement('p');
+    empty.className = 'gpu-rent-empty';
+    empty.textContent = '还没有 InferenceX 快照。定时拉取默认关闭，把 AI_CENTER_INFERENCEX_SYNC 设为 1 后重启 Worker。';
+    root.append(empty);
+    return;
+  }
+  const table = document.createElement('table');
+  table.className = 'market-table';
+  const head = document.createElement('tr');
+  for (const label of ['模型', '硬件', '框架', '精度', 'ISL', 'OSL', '分离', '投机', '类型', '日期', 'tokens/s/GPU', '链接']) {
+    const cell = document.createElement('th');
+    cell.textContent = label;
+    head.append(cell);
+  }
+  table.append(head);
+  const shown = benchmarks.length ? benchmarks : availability.map((row) => ({ ...row, tokensPerSecondPerGpu: null }));
+  for (const row of shown.slice(0, 40)) {
+    const line = document.createElement('tr');
+    const values = [
+      row.model, row.hardware, row.framework, row.precision, String(row.isl), String(row.osl),
+      row.disagg ? '是' : '否', row.specMethod, row.benchmarkType, row.date,
+      row.tokensPerSecondPerGpu || '—',
+    ];
+    for (const value of values) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      line.append(cell);
+    }
+    const linkCell = document.createElement('td');
+    if (row.sourceUrl) {
+      const link = document.createElement('a');
+      link.href = row.sourceUrl;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = '原始';
+      linkCell.append(link);
+    }
+    line.append(linkCell);
+    table.append(line);
+  }
+  root.append(table);
+}

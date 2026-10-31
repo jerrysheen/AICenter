@@ -21,6 +21,7 @@ import { createEtfWhaleReadService } from './etf-whale-service.js';
 import { createEventQuoteSnapshotService } from './event-quote-snapshots.js';
 import { createInvestorDiscussionService } from './investor-discussion.js';
 import { createComputePriceService } from './compute-price-service.js';
+import { createInferencexService } from './inferencex-service.js';
 import { createApiTokenService } from './api-token-service.js';
 import { createSouthboundReadService } from './southbound-service.js';
 import { createNorthboundReadService } from './northbound-service.js';
@@ -227,6 +228,9 @@ export function createDomainServices({
       : null,
     computePrices: store.repositories.computePrices
       ? createComputePriceService({ repository: store.repositories.computePrices })
+      : null,
+    inferencex: store.repositories.inferencex
+      ? createInferencexService({ repository: store.repositories.inferencex })
       : null,
     southbound: store.repositories.southbound
       ? createSouthboundReadService({

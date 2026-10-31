@@ -71,6 +71,7 @@ let hardwareReady = false;
 let computeMarketItems = () => [];
 let gpuMatchesSource = () => true;
 let renderGpuRentHistory = () => {};
+let renderInferencePanel = () => {};
 let gpuHistoryQuery = () => ({ start: '', end: '', grain: 'day' });
 let computeReady = false;
 let mediaModules = null;
@@ -177,6 +178,9 @@ const state = {
   gpuHistoryLoading: false,
   gpuHistoryRange: '90',
   gpuHistoryRequestId: 0,
+  inferenceBoard: null,
+  inferenceLoading: false,
+  inferenceError: '',
   assetFilter: '',
   assetDashboard: null,
   assetDashboardError: '',
@@ -1860,6 +1864,7 @@ function ensureCompute() {
       computeMarketItems = mod.computeMarketItems;
       gpuMatchesSource = mod.gpuMatchesSource;
       renderGpuRentHistory = mod.renderGpuRentHistory;
+      renderInferencePanel = mod.renderInferencePanel;
       gpuHistoryQuery = mod.gpuHistoryQuery;
       computeReady = true;
       return mod;
@@ -6256,6 +6261,7 @@ function renderAssets() {
   const onCompute=state.assetClass==='compute';
   const onEvents = syncGlobalEventsSection();
   renderGpuHistorySection(onCompute);
+  renderInferenceSection(onCompute);
   elements['asset-filter'].placeholder=onHardware?'完整规格 / 报价类型':onCompute?'模型 / GPU':'名称 / 代码 / 介绍';
   hardwareFilters.classList.toggle('hidden',!onHardware && !onCompute);
   if(onHardware) {
@@ -6350,6 +6356,7 @@ async function loadComputePrices() {
     state.computeChecks = payload.checks || [];
     state.computeLoaded = true;
     loadGpuRentHistory().catch(() => {});
+    loadInferenceBoard().catch(() => {});
   } catch (error) {
     if (requestId === state.computeRequestId) state.computeError = error.message;
   } finally {
@@ -6357,6 +6364,40 @@ async function loadComputePrices() {
       state.computeLoading = false;
       renderAssets();
     }
+  }
+}
+
+function renderInferenceSection(onCompute) {
+  const root = document.getElementById('inferencex-panel');
+  if (!root) return;
+  root.classList.toggle('hidden', !onCompute);
+  if (!onCompute) return;
+  const body = document.getElementById('inferencex-body');
+  if (!body) return;
+  if (state.inferenceLoading && !state.inferenceBoard) {
+    body.textContent = '正在读取 InferenceX…';
+    return;
+  }
+  if (state.inferenceError && !state.inferenceBoard) {
+    body.textContent = state.inferenceError;
+    return;
+  }
+  renderInferencePanel(body, state.inferenceBoard || { availability: [], benchmarks: [] });
+}
+
+async function loadInferenceBoard() {
+  if (!state.bootstrapped || !state.session) return;
+  await ensureCompute();
+  state.inferenceLoading = true;
+  state.inferenceError = '';
+  try {
+    const payload = await api('/api/v1/inferencex');
+    state.inferenceBoard = payload;
+  } catch (error) {
+    state.inferenceError = error instanceof Error ? error.message : 'InferenceX 没有读出来';
+  } finally {
+    state.inferenceLoading = false;
+    if (state.assetClass === 'compute') renderAssets();
   }
 }
 
