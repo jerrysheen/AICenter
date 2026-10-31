@@ -27,6 +27,8 @@
 
 - `progress/2026-10-31-inferencex-snapshots.md`：InferenceX 按公开 availability 和带 `model` 的 benchmarks 落独立快照。缺条件的行不入库，tokens/s 不是投资结论。定时默认关闭。migration 98。打开后需要重启 Worker；页面要重启 Web。
 
+- `progress/2026-10-31-arxiv-media-source.md`：arXiv 用官方查询 API 按 `lastUpdatedDate` 发现四类论文，摘要进媒体索引，全文标成延后。来源默认关闭。不新增 migration。只需要重启 Worker。探针变绿后再打开。
+
 - `progress/2026-10-31-hourly-category-list.md`：类目小时的「还没归类」灰字直接列出，不再默认折起。没有已归类方向时不写「按方向整理好了，先看要点」。列表条数已经盖住 `inputCount` 时不再标「材料已截断」；少列出来才写「已显示 x/N」。窄屏小时报正文底下留出底栏高度和安全区。不新增 migration。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。
 
 - `progress/2026-10-31-hourly-category-tree-reuse.md`：类目小时不再另打分类模型，也不再按 Gemma 标签分桶。整点在信息树和阅读分类之后，把这一小时阅读稿里的中文标题和方向抄进类目刊期。树里已是金融、产业个股、科技与AI、地缘政治的条目不再进未归类。06 点和 10 点选择器对准的就是那一小时，刊期是 empty，不是读错窗口，也不是失败回落到别的小时。不打开失败补跑。不新增 migration。只需要重启 Worker。已经 ready 的 09、11、12、13 点要各 POST 一次那一个小时才会改写。

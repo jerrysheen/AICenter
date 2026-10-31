@@ -2,6 +2,8 @@
 
 2026-10-31 InferenceX 公开跑分进入独立快照，不进媒体，也不进 GPU 租金表。`GET /api/v1/availability` 不带参数；`GET /api/v1/benchmarks` 只带 `model`。缺模型、硬件、框架、精度、isl、osl、disagg、spec_method、benchmark_type、日期或原始链接的行不写库。页面上的 tokens/s 只是该条件下的观测，不是投资结论。周摘要没有接进 `#report`。`AI_CENTER_INFERENCEX_SYNC` 默认关闭。migration 98。当前 schema 是 98。下一号是 99。空号仍是 63、79、80、82。不要重建数据库。打开定时后重启 Worker；算力页要重启 Web 并再加载一次。见 `progress/2026-10-31-inferencex-snapshots.md`。
 
+2026-10-31 arXiv 用官方查询 API 按 `lastUpdatedDate` 发现 cs.DC、cs.AR、cs.CL、cs.LG。摘要进媒体索引，`contentLevel` 是 `summary_only`，HTML 全文标成 `full_text_deferred:html_preferred`。来源默认关闭。许可类 vendor_api 仍然没有凭证就不请求。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。探针变绿后再打开 `arxiv`。见 `progress/2026-10-31-arxiv-media-source.md`。
+
 2026-10-31 类目小时的「还没归类」不再收成带箭头的卡片。灰字标题和要点直接列在方向卡片下面。这一小时没有已归类方向时，不写「按方向整理好了，先看要点」。页面不跟生成时的 `truncated` 走，只在画出来的条数少于 `inputCount` 时写「已显示 x/N」。13 条都在列表里就不再出现「材料已截断」。窄屏（底栏还在）的小时报列表底部留出底栏高度加安全区，滚到底能看见最后一条。不改归类、不改 Worker、不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器强刷 `#report?hour=`。Worker 不用为这项重启。见 `progress/2026-10-31-hourly-category-list.md`。
 
 2026-10-31 类目小时不再另写一套英文标题和 Gemma 分桶。`report.hourly.extract` 在信息树和阅读分类之后，把这一小时阅读稿已经显示的中文标题和方向写成类目刊期。方向是金融、产业个股、科技与AI、地缘政治。阅读稿里已有这些方向的条目不进「还没归类」。没有这些方向时，标题仍用信息节点上的那句。不再调用 `hourly-category-brief`。06:00–07:00 和 10:00–11:00 的选择器就是这两个小时，类目状态是 `empty`、阅读稿也没有，是这一小时没有可入刊材料，不是把小时读错，也不是 14、15 点那种「尚未生成、改显示 13 点」。失败补跑保持关闭。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。只需要重启 Worker。已经 ready 的类目刊期不会自动改写。09、11、12、13 点各用一次 `POST /api/v1/reports/hourly/generate`，正文只带那一个 `hourStart`。不要连排，也不要把 `AI_CENTER_HOURLY_NO_CATCHUP` 设成 `0`。见 `progress/2026-10-31-hourly-category-tree-reuse.md`。
