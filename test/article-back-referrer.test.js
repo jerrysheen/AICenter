@@ -12,7 +12,7 @@ function functionSource(name) {
 }
 
 function navigationContext() {
-  const state = { trail: [], pageKind: 'article', pageId: 'feed:abc', navigationFrom: '' };
+  const state = { trail: [], pageKind: 'article', pageId: 'feed:abc', navigationFrom: '', articleReferrerLive: false };
   const history = {
     state: null,
     url: '/app',
@@ -35,6 +35,10 @@ function navigationContext() {
   vm.runInContext([
     'normalizeRoute',
     'routeLabel',
+    'readStoredArticleReferrer',
+    'storeArticleReferrer',
+    'articleReferrerHash',
+    'rememberRestoredArticleReferrer',
     'returnTarget',
     'articleBackLabel',
     'goBack',
@@ -107,6 +111,48 @@ test('a later hashchange does not replace an article referrer already stored on 
   assert.equal(context.history.state.hash, '#article/feed:abc');
   assert.equal(context.history.state.aiCenterPrevious, '#report?hour=20');
   assert.equal(context.articleBackLabel(), '返回简报');
+});
+
+test('a reloaded article keeps the brief label and returns to that hour instead of the feed', () => {
+  const storage = new Map();
+  const sessionStorage = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, String(value)),
+  };
+  const context = navigationContext();
+  context.sessionStorage = sessionStorage;
+  context.location.hash = '#article/feed:abc';
+  context.history.state = { aiCenter: true, hash: '#article/feed:abc', aiCenterPrevious: '#report?hour=20' };
+  context.state.articleReferrerLive = false;
+  context.rememberRestoredArticleReferrer();
+  assert.equal(context.articleBackLabel(), '返回简报');
+  context.goBack();
+  assert.equal(context.history.backCount, 0);
+  assert.equal(context.targets[0][0], 'report?hour=20');
+  assert.equal(context.targets[0][1].back, true);
+  assert.equal(JSON.parse(storage.get('ai-center.article-referrer')).from, '#report?hour=20');
+
+  const reloaded = navigationContext();
+  reloaded.sessionStorage = sessionStorage;
+  reloaded.location.hash = '#article/feed:abc';
+  reloaded.history.state = null;
+  assert.equal(reloaded.articleBackLabel(), '返回简报');
+  reloaded.goBack();
+  assert.equal(reloaded.history.backCount, 0);
+  assert.equal(reloaded.targets[0][0], 'report?hour=20');
+  assert.equal(reloaded.targets[0][1].back, true);
+});
+
+test('a reloaded article with no stored source still labels and opens the feed', () => {
+  const context = navigationContext();
+  context.sessionStorage = { getItem: () => null, setItem() {} };
+  context.location.hash = '#article/feed:abc';
+  context.history.state = null;
+  context.state.articleReferrerLive = false;
+  assert.equal(context.articleBackLabel(), '返回信息流');
+  context.goBack();
+  assert.equal(context.history.backCount, 0);
+  assert.equal(context.targets[0][0], 'feed');
 });
 
 test('article back copy follows the referrer and hash changes record it before rendering', () => {

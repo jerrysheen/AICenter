@@ -117,11 +117,13 @@ test('article return uses the local browser history; direct links have a determi
   const context = vm.createContext({ normalizeRoute, state, history,
     document: { body: { dataset: { view: 'page' } } }, setView: (...args) => targets.push(args),
   });
-  vm.runInContext(`${functionSource('returnTarget')}\n${functionSource('goBack')}`, context);
+  vm.runInContext(['readStoredArticleReferrer', 'storeArticleReferrer', 'articleReferrerHash', 'returnTarget', 'goBack'].map(functionSource).join('\n'), context);
   assert.equal(context.returnTarget(), 'feed');
   context.goBack();assert.equal(targets[0][0], 'feed');
   history.state = { aiCenterPrevious: '#feed' };
-  state.trail = ['#feed'];context.goBack();
+  state.trail = ['#feed'];
+  state.articleReferrerLive = true;
+  context.goBack();
   assert.equal(history.backCount, 1);assert.equal(state.trail.length, 0);
   state.navigationFrom = '#sources/catalog';
   assert.equal(context.returnTarget(), 'sources/catalog');

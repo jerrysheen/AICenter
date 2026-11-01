@@ -82,6 +82,9 @@ function readerContext(performApi) {
   vm.runInContext([
     functionSource('normalizeRoute'),
     functionSource('routeLabel'),
+    functionSource('readStoredArticleReferrer'),
+    functionSource('storeArticleReferrer'),
+    functionSource('articleReferrerHash'),
     functionSource('returnTarget'),
     functionSource('articleBackLabel'),
     functionSource('renderViewState'),

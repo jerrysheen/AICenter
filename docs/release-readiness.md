@@ -1,5 +1,7 @@
 # 0.2.0 发布门槛
 
+2026-10-31 从 `#report?hour=N` 打开原文后整页重载，或在同一标签里再次打开这篇文章，站内返回仍回到这一小时，简报保持高亮，按钮仍是「返回简报」。同一次打开里的返回仍走浏览器后退。没有记下的来源时，按钮和去向都是信息流。不新增 migration。当前 schema 仍是 98。下一号是 99。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-article-back-reload.md`。
+
 2026-10-31 从 `#report?hour=N` 点「原文」后，阅读页站内返回回到这一条小时报，简报保持高亮，按钮写「返回简报」。从信息流打开文章再返回，仍回到信息流。直接打开文章、没有来源时，仍退回信息流。不改类目小时链接。不新增 migration。当前 schema 仍是 98。下一号是 99。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-article-back-referrer.md`。
 
 2026-10-31 SemiAnalysis 只收媒体页粘贴的公开 URL，正文完整度是 `partial`。不抓 Newsletter RSS，不用 `content:encoded` 当全文。401、403 和付费墙记为 `policy_skipped`。同步不发请求。Research API 未接入。不新增 migration。当前 schema 仍是 97。下一号是 98。空号仍是 63、79、80、82。不要重建数据库。需要重启 Web，浏览器再加载一次。Worker 不用为这项重启。见 `progress/2026-10-31-semianalysis-manual-url.md`。
