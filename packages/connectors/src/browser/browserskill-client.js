@@ -236,6 +236,93 @@ export function createBrowserSkillClient(options = {}) {
     return run(['status'], { timeoutMs: Math.min(timeoutMs, 15_000) });
   }
 
+  function refusalKind(error) {
+    const message = String(error?.message || '');
+    if (/observed content changed|observed page or control state changed/i.test(message)) return 'moving';
+    if (/context returned by the latest cooperate sync|cooperation_sync_required|synchronize and replan/i.test(message)) return 'context';
+    return '';
+  }
+
+  function selectorMissing(error) {
+    const message = String(error?.message || '');
+    const code = String(error?.details?.code || '');
+    return code === 'selector_not_found'
+      || code === 'selector_missing'
+      || /selector did not match|selector_not_found|selector_missing/i.test(message);
+  }
+
+  function listedDepends(dependsOn) {
+    const values = Array.isArray(dependsOn) ? dependsOn : dependsOn ? [dependsOn] : [];
+    return [...new Set(values.map((item) => String(item || '').trim()).filter(Boolean))];
+  }
+
+  function commandArgs(args, context, dependsOn) {
+    const next = [...args];
+    if (context) next.push('--context', context);
+    for (const selector of dependsOn) next.push('--depends-on', selector);
+    return next;
+  }
+
+  async function readContext(sessionId, commandOptions, wait) {
+    if (wait) {
+      try {
+        await run(
+          ['cooperate', 'wait', '--session', String(sessionId), '--timeout-ms', '8000'],
+          { timeoutMs: 20_000, signal: commandOptions.signal },
+        );
+      } catch {
+        // A missed wait still leaves the following sync able to refresh the page.
+      }
+    }
+    const synced = await run(
+      ['cooperate', 'sync', '--session', String(sessionId), '--settle'],
+      {
+        timeoutMs: Math.max(5_000, Math.min(30_000, Number(commandOptions.timeoutMs) || 30_000)),
+        signal: commandOptions.signal,
+      },
+    );
+    return String(synced?.context_id || synced?.context || '').trim();
+  }
+
+  // bsk 0.4 shared-tab actions need the context_id from the latest cooperate
+  // sync, and each context authorizes one action. A quiet page still succeeds
+  // without it. A missing context syncs and retries. A page that moved waits
+  // before every resync, and keeps going while the command budget remains,
+  // because a live timeline can stay stale for more than two tries.
+  // `--depends-on` narrows that guard to the named regions. A missing selector
+  // drops the narrowing once and retries against the whole page.
+  async function runShared(sessionId, args, commandOptions = {}) {
+    let context = '';
+    let dependsOn = listedDepends(commandOptions.dependsOn);
+    let droppedDepends = false;
+    let lastError = null;
+    const started = Date.now();
+    const budget = Math.max(1_000, Number(commandOptions.timeoutMs) || timeoutMs);
+    const maxAttempts = 6;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        return await run(commandArgs(args, context, dependsOn), commandOptions);
+      } catch (error) {
+        lastError = error;
+        if (dependsOn.length && !droppedDepends && selectorMissing(error)) {
+          droppedDepends = true;
+          dependsOn = [];
+          attempt -= 1;
+          continue;
+        }
+        const kind = refusalKind(error);
+        if (!kind || attempt === maxAttempts - 1 || Date.now() - started >= budget) throw error;
+        try {
+          context = await readContext(sessionId, commandOptions, kind === 'moving' || attempt > 0);
+        } catch {
+          throw error;
+        }
+        if (!context) throw error;
+      }
+    }
+    throw lastError;
+  }
+
   return {
     id: 'bsk',
     status,
@@ -288,14 +375,19 @@ export function createBrowserSkillClient(options = {}) {
       if (navigateOptions.waitUntil) args.push('--wait-until', String(navigateOptions.waitUntil));
       // bsk keeps the IPC open for the tool timeout plus 15s. Leave room so a
       // timeout result can return before the process is killed.
-      return run(args, { timeoutMs: limit + 20_000, signal: navigateOptions.signal });
+      return runShared(sessionId, args, {
+        timeoutMs: limit + 20_000,
+        signal: navigateOptions.signal,
+        dependsOn: navigateOptions.dependsOn,
+      });
     },
 
     async evaluate(sessionId, expression, evaluateOptions = {}) {
       const evaluateTimeoutMs = Math.max(1_000, Number(evaluateOptions.timeoutMs) || timeoutMs);
-      const payload = await run(
+      const payload = await runShared(
+        sessionId,
         ['evaluate', String(expression), '--session', String(sessionId), '--timeout', `${Math.floor(evaluateTimeoutMs)}ms`],
-        { timeoutMs: evaluateTimeoutMs, signal: evaluateOptions.signal },
+        { timeoutMs: evaluateTimeoutMs, signal: evaluateOptions.signal, dependsOn: evaluateOptions.dependsOn },
       );
       if (payload && payload.ok === false) {
         const text = String(payload.error?.text || 'evaluate failed');
@@ -306,7 +398,11 @@ export function createBrowserSkillClient(options = {}) {
 
     async click(sessionId, selector, clickOptions = {}) {
       const args = ['click', '--session', String(sessionId), '--selector', String(selector)];
-      return run(args, { timeoutMs: clickOptions.timeoutMs || timeoutMs, signal: clickOptions.signal });
+      return runShared(sessionId, args, {
+        timeoutMs: clickOptions.timeoutMs || timeoutMs,
+        signal: clickOptions.signal,
+        dependsOn: clickOptions.dependsOn,
+      });
     },
 
     async fill(sessionId, selector, value, fillOptions = {}) {
@@ -316,7 +412,11 @@ export function createBrowserSkillClient(options = {}) {
         '--selector', String(selector),
         '--value', String(value),
       ];
-      return run(args, { timeoutMs: fillOptions.timeoutMs || timeoutMs, signal: fillOptions.signal });
+      return runShared(sessionId, args, {
+        timeoutMs: fillOptions.timeoutMs || timeoutMs,
+        signal: fillOptions.signal,
+        dependsOn: fillOptions.dependsOn,
+      });
     },
 
     async stopSession(sessionId) {

@@ -150,6 +150,123 @@ test('BrowserSkillClient click and fill use selector flags', async () => {
   assert.ok(commands[1].includes('--value'));
 });
 
+test('BrowserSkill refreshes cooperate context when a shared action is refused', async () => {
+  const commands = [];
+  let evaluates = 0;
+  let lastContext = '';
+  const client = createBrowserSkillClient({
+    async runCommand(args) {
+      commands.push(args.slice(1, 4).join(' '));
+      const contextIndex = args.indexOf('--context');
+      if (contextIndex >= 0) lastContext = args[contextIndex + 1];
+      if (args[1] === 'evaluate') {
+        evaluates += 1;
+        if (evaluates < 3) {
+          return {
+            code: 1,
+            stdout: JSON.stringify({
+              code: 'permission_denied',
+              message: evaluates === 1
+                ? 'This action requires the context returned by the latest cooperate sync'
+                : 'The action\'s observed content changed; synchronize and replan',
+            }),
+            stderr: '',
+          };
+        }
+        return { code: 0, stdout: JSON.stringify({ ok: true, value: { status: 200, text: '{}' } }), stderr: '' };
+      }
+      if (args[1] === 'cooperate' && args[2] === 'sync') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ context_id: evaluates === 1 ? 'ctx-a' : 'ctx-b' }),
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
+    },
+  });
+  assert.deepEqual(await client.evaluate('SESS', '1+1'), { status: 200, text: '{}' });
+  assert.deepEqual(commands, [
+    'evaluate 1+1 --session',
+    'cooperate sync --session',
+    'evaluate 1+1 --session',
+    'cooperate wait --session',
+    'cooperate sync --session',
+    'evaluate 1+1 --session',
+  ]);
+  assert.equal(lastContext, 'ctx-b');
+});
+
+test('BrowserSkill keeps waiting while a live page is still moving', async () => {
+  const commands = [];
+  let evaluates = 0;
+  const client = createBrowserSkillClient({
+    async runCommand(args) {
+      commands.push(args.slice(1, 4).join(' '));
+      if (args[1] === 'evaluate') {
+        evaluates += 1;
+        if (evaluates < 4) {
+          return {
+            code: 1,
+            stdout: JSON.stringify({
+              code: 'permission_denied',
+              message: 'The action\'s observed content changed; synchronize and replan',
+            }),
+            stderr: '',
+          };
+        }
+        return { code: 0, stdout: JSON.stringify({ ok: true, value: { tweets: 1 } }), stderr: '' };
+      }
+      if (args[1] === 'cooperate' && args[2] === 'sync') {
+        return { code: 0, stdout: JSON.stringify({ context_id: `ctx-${evaluates}` }), stderr: '' };
+      }
+      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
+    },
+  });
+  assert.deepEqual(await client.evaluate('SESS', 'read()'), { tweets: 1 });
+  assert.deepEqual(commands, [
+    'evaluate read() --session',
+    'cooperate wait --session',
+    'cooperate sync --session',
+    'evaluate read() --session',
+    'cooperate wait --session',
+    'cooperate sync --session',
+    'evaluate read() --session',
+    'cooperate wait --session',
+    'cooperate sync --session',
+    'evaluate read() --session',
+  ]);
+});
+
+test('BrowserSkill narrows the cooperate guard and drops a missing selector once', async () => {
+  const commands = [];
+  let evaluates = 0;
+  const client = createBrowserSkillClient({
+    async runCommand(args) {
+      commands.push(args.filter((item) => item !== '--json'));
+      if (args[1] === 'evaluate') {
+        evaluates += 1;
+        if (evaluates === 1) {
+          return {
+            code: 1,
+            stdout: JSON.stringify({ code: 'selector_not_found', message: 'selector did not match any element' }),
+            stderr: '',
+          };
+        }
+        return { code: 0, stdout: JSON.stringify({ ok: true, value: { logged_in: false } }), stderr: '' };
+      }
+      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
+    },
+  });
+  assert.deepEqual(
+    await client.evaluate('SESS', 'inspect()', { dependsOn: ['[data-testid="AppTabBar_Home_Link"]'] }),
+    { logged_in: false },
+  );
+  assert.equal(commands[0].filter((item) => item === '--depends-on').length, 1);
+  assert.ok(commands[0].includes('[data-testid="AppTabBar_Home_Link"]'));
+  assert.equal(commands[1].includes('--depends-on'), false);
+});
+
 test('BrowserSkillClient normalizes non-JSON and command failures', async () => {
   const invalid = createBrowserSkillClient({
     async runCommand() {

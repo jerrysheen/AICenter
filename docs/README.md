@@ -25,6 +25,10 @@
 
 ## 当前
 
+- `progress/2026-11-01-x-for-you-page-guard.md`：X 首页动作只核对左侧 Home 链接，推荐流插帖不再把整页快照判过期。页面仍在动时先 wait，命令时限内最多 6 次。不新增 migration。只需要重启 Worker。
+
+- `progress/2026-10-31-bsk-cooperate-context.md`：BrowserSkill 0.4 共享页的导航、脚本、点击和填写，被拒绝时用最近一次 cooperate sync 的 context 再试。页面还在变时先 wait。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-10-31-article-back-reload.md`：从小时报打开原文后整页重载，站内返回仍回到 `#report?hour=N`，按钮保持「返回简报」。没有来源时文案和去向都是信息流。不新增 migration。需要重启 Web。
 
 - `progress/2026-10-31-article-back-referrer.md`：从 `#report?hour=N` 打开原文后，站内返回回到这一小时，按钮写「返回简报」。从信息流打开仍回到信息流。不新增 migration。需要重启 Web。

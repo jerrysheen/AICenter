@@ -571,9 +571,17 @@ const EXTRACT_TIMEOUT_MS = 45_000;
 const FOLLOWING_EXPAND_CAP = 16;
 const FOR_YOU_TRUNCATED_CAP = 8;
 const EXPAND_TIME_RESERVE_MS = 45_000;
+// For You keeps inserting tweets. A whole-page cooperate guard treats that as
+// a stale snapshot and refuses the action. The home link stays put, so the
+// guard covers the decision without covering the live timeline.
+const X_HOME_DEPENDS_ON = ['[data-testid="AppTabBar_Home_Link"]'];
 
 function stepOptions(timeoutMs, budget) {
-  return { timeoutMs, ...(budget?.signal ? { signal: budget.signal } : {}) };
+  return {
+    timeoutMs,
+    ...(budget?.signal ? { signal: budget.signal } : {}),
+    dependsOn: X_HOME_DEPENDS_ON,
+  };
 }
 
 function abortedError(error) {

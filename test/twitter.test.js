@@ -161,6 +161,29 @@ test('X home browser client uses BrowserRuntime and stops the session', async ()
   assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1] || '').includes('/status/')), false);
 });
 
+test('X home actions guard the stable home link instead of the live timeline', async () => {
+  const seen = [];
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate(url, options) { seen.push(['navigate', url, options?.dependsOn]); },
+        async evaluate(expression, options) {
+          seen.push(['evaluate', options?.dependsOn]);
+          if (String(expression).includes('tweetText')) {
+            return { items: [{ tweet_id: '1', tweet_url: 'https://x.com/u/status/1', text: 'hello', author_handle: 'u' }] };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false, selected_tab: 'For you' };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
+  assert.equal(result.tweets[0].tweet_id, '1');
+  assert.ok(seen.length > 0);
+  assert.ok(seen.every((item) => Array.isArray(item[item.length - 1]) && item[item.length - 1].includes('[data-testid="AppTabBar_Home_Link"]')));
+});
+
 test('show more click matches the label the extractor already counts', () => {
   const click = buildClickShowMoreExpression();
   assert.match(click, /tweet-text-show-more-link/);
