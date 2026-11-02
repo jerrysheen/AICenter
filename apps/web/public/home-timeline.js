@@ -62,8 +62,26 @@ export function preferredOverviewFocus(nowMs = Date.now()) {
   return 'us';
 }
 
-export function reportHourHref(startAt) {
-  return `#report?hour=${shanghaiHourLabel(startAt).hour}`;
+export function reportHourHref(startAt, nowMs = Date.now()) {
+  const hour = shanghaiHourLabel(startAt).hour;
+  const start = shanghaiParts(startAt);
+  const today = shanghaiParts(nowMs);
+  const sameDay = start.year === today.year && start.month === today.month && start.day === today.day;
+  if (sameDay) return `#report?hour=${hour}`;
+  const pad = (value) => String(value).padStart(2, '0');
+  return `#report/${start.year}-${pad(start.month)}-${pad(start.day)}?hour=${hour}`;
+}
+
+// 总览「更多」跟用户看见的那一小时走。有条目的最近一期优先；还在读时才退回刊期列表的第一份。
+export function homeHourMoreStart({ sections = [], editions = [] } = {}) {
+  const list = Array.isArray(sections) ? sections : [];
+  const shown = list.find((section) => Array.isArray(section?.items) && section.items.length > 0)
+    || list.find((section) => Number.isFinite(Number(section?.startAt)))
+    || null;
+  const fromSection = Number(shown?.startAt);
+  if (Number.isFinite(fromSection)) return fromSection;
+  const fromEdition = Number(editions?.[0]?.window?.startAt);
+  return Number.isFinite(fromEdition) ? fromEdition : null;
 }
 
 export function pickHomeQuoteCards({ focus, indices = [], sectionIndices = [] } = {}) {
