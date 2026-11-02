@@ -5888,10 +5888,10 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .tree-period-step:disabled { color:var(--font-tertiary); opacity:0.4; cursor:default; }
 .tree-period-pop { position:absolute; right:0; top:calc(100% + 4px); z-index:30; min-width:180px; max-height:320px; overflow:auto; padding:8px 12px; background:var(--background-primary); border:1px solid var(--comp-tertiary); border-radius:4px; box-shadow:0 6px 20px #1b202815; }
 .tree-period-pop .tree-hour-rail { display:flex; flex-direction:column; align-items:stretch; width:auto; gap:0; }
-.tree-period-pop .tree-hour-day, .tree-period-pop .tree-hour-now, .tree-period-pop .tree-hour-earlier, .tree-period-pop .tree-hour-yesterday { display:block; }
+.tree-period-pop .tree-hour-day, .tree-period-pop .tree-hour-now, .tree-period-pop .tree-hour-earlier, .tree-period-pop .tree-hour-yesterday, .tree-period-pop .tree-hour-today { display:block; }
 .tree-period-pop .tree-hour-wheel { display:flex; flex-direction:column; align-items:stretch; gap:0; overflow:visible; scroll-snap-type:none; padding-right:0; mask-image:none; -webkit-mask-image:none; }
 .tree-period-pop .tree-hour-more { display:none; }
-.tree-period-pop .chip-tab, .tree-period-pop .tree-hour-gap, .tree-period-pop .tree-hour-earlier, .tree-period-pop .tree-hour-yesterday { width:100%; justify-content:flex-start; text-align:left; scroll-snap-align:none; }
+.tree-period-pop .chip-tab, .tree-period-pop .tree-hour-gap, .tree-period-pop .tree-hour-earlier, .tree-period-pop .tree-hour-yesterday, .tree-period-pop .tree-hour-today { width:100%; justify-content:flex-start; text-align:left; scroll-snap-align:none; }
 .tree-issue { padding-top:12px; }
 .tree-issue[hidden] { display:none; }
 .tree-issue-heading { display:flex; align-items:baseline; justify-content:space-between; gap:16px; }
@@ -5906,9 +5906,9 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
 .tree-back-issues select, .tree-back-issues input, .tree-tag-panel select { font:inherit; min-height:44px; border:1px solid var(--comp-tertiary); border-radius:6px; background:var(--background-primary); }
 .tree-hour-layout { min-width: 0; }
 .tree-hour-rail { min-width: 0; }
-.tree-hour-day, .tree-hour-now, .tree-hour-earlier, .tree-hour-yesterday, .tree-hour-more { color: var(--font-tertiary); font-size: 13px; }
+.tree-hour-day, .tree-hour-now, .tree-hour-earlier, .tree-hour-yesterday, .tree-hour-today, .tree-hour-more { color: var(--font-tertiary); font-size: 13px; }
 .tree-hour-now { margin: 4px 0; }
-.tree-hour-earlier, .tree-hour-yesterday, .tree-hour-more, .tree-hour-gap { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--font-tertiary); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.tree-hour-earlier, .tree-hour-yesterday, .tree-hour-today, .tree-hour-more, .tree-hour-gap { min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--font-tertiary); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
 .tree-hour-delay { margin: 8px 0 4px; }
 .tree-hour-delay[hidden] { display: none; }
 .tree-hour-delay strong { font-size: 14px; font-weight: 700; }
@@ -5944,7 +5944,7 @@ dialog.brief-evidence .brief-technical p { font-size:12px; line-height:1.8; whit
     font-size: 12px;
     color: var(--font-secondary);
   }
-  .tree-hour-day, .tree-hour-now, .tree-hour-earlier, .tree-hour-yesterday { display: none; }
+  .tree-hour-day, .tree-hour-now, .tree-hour-earlier, .tree-hour-yesterday, .tree-hour-today { display: none; }
   .tree-hour-rail { display: flex; align-items: center; gap: 4px; }
   .tree-hour-wheel { flex: 1; min-width: 0; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
   .tree-hour-more { flex: none; }

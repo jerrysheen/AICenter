@@ -42,6 +42,7 @@ import {
   absorbReadingIndex,
   mergeReadingHours,
   reportHourHref,
+  homeHourMoreStart,
   unavailableOfficialCount,
 } from './home-timeline.js?v=dev';
 import { commitReportHistory, reportListHash, reportViewOwnsScroll, stackReportNode } from './report-history.js?v=dev';
@@ -8412,6 +8413,7 @@ function renderHomeHourlyModule() {
     nowMs: Date.now(),
   });
   const edition = editions[0] || null;
+  const moreStart = homeHourMoreStart({ sections, editions });
   let status = 'ready';
   if (!state.homeHourlySettled || !state.homeTreeLoaded) status = state.homeSlow ? 'slow' : 'loading';
   else if (state.homeTreeError && !edition) status = 'error';
@@ -8421,7 +8423,7 @@ function renderHomeHourlyModule() {
   const host = homeModuleFrame(root, {
     title: '小时报',
     status,
-    onMore: () => setView(edition ? homeHourHref(edition.window.startAt) : 'report'),
+    onMore: () => setView(moreStart == null ? 'report' : homeHourHref(moreStart)),
     onRetry: () => loadSourcesPage({ refresh: true }).catch(() => {}),
   });
   if (!host) return;

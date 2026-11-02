@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-11-02-hourly-today-entry.md`：停在昨天时，期数菜单和「下一期」能进今天最新有内容的小时。总览「小时报 → 更多」打开正在看的那一小时，同一钟点优先今天。不新增 migration。需要重启 Web。
+
 - `progress/2026-10-31-article-back-reload.md`：从小时报打开原文后整页重载，站内返回仍回到 `#report?hour=N`，按钮保持「返回简报」。没有来源时文案和去向都是信息流。不新增 migration。需要重启 Web。
 
 - `progress/2026-10-31-article-back-referrer.md`：从 `#report?hour=N` 打开原文后，站内返回回到这一小时，按钮写「返回简报」。从信息流打开仍回到信息流。不新增 migration。需要重启 Web。
