@@ -152,7 +152,7 @@ export function readingExpandedText(node, translationText) {
   return dropEllipsisLead(node?.body || node?.text || '');
 }
 export function createInformationTreePage(host) {
-  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
+  let root,list,titleEl,coverageEl,statusRow,statusToggle,statusDetail,pastBtn,directionNav,hourChips,dayChips,tools,materialsBtn,tagPanel,tag,period,backIssues,notice,delayEl,hourRail,hourDay,hourNow,hourEarlier,hourYesterday,hourToday,hourMore,issueEl,periodBar,periodMeta,periodLabel,periodPop,periodPrev,periodNext,mode='daily',direction=null,directionExplicit=false,showMaterials=false,selectedHourStart=0,dailyStart=0,openedId='',openedDirection='',manifest,selected=null,epoch=0,flight=0,settled=false,timer=0,dateFilter='',checking=null,pinnedReadingId='';
   let requests=new AbortController();
   let digestStop=()=>{};
   let periodDocBound=false;
@@ -768,7 +768,7 @@ export function createInformationTreePage(host) {
     if(mode==='hourly' && !showMaterials && !openedId){
       const rows=focusedHourRows(hourRows());
       const index=rows.findIndex(item=>item.window.startAt===selectedHourStart);
-      return {earlier:index>=0 && index<rows.length-1, later:index>0};
+      return {earlier:index>=0 && index<rows.length-1, later:index>0 || (index===0 && canOpenTodayLatest())};
     }
     if(mode==='daily' && !showMaterials && !openedId){
       const editions=recentDailies();
@@ -839,6 +839,51 @@ export function createInformationTreePage(host) {
     const focusDay=day(selectedRow.window.startAt);
     return rows.filter(item=>day(item.window.startAt)===focusDay);
   }
+  // 地址只写了钟点、没有日期时，优先落在今天。否则会沿用上一次停住的那一天，把今天 15 点开成昨天 15 点。
+  function rowsForPendingClock(all){
+    const rows=Array.isArray(all) ? all : [];
+    if(dateFilter){
+      const filtered=rows.filter(item=>day(item.window.startAt)===dateFilter);
+      return filtered.length ? filtered : rows;
+    }
+    const todayKey=day(Date.now());
+    const todayRows=rows.filter(item=>day(item.window.startAt)===todayKey);
+    if(todayRows.length) return todayRows;
+    const focused=focusedHourRows(rows);
+    return focused.length ? focused : rows;
+  }
+  function hourLooksReadable(edition){
+    if(readingIndex instanceof Map){
+      const row=readingIndex.get(edition.window.startAt);
+      if(row && Number.isFinite(Number(row.selected))) return Number(row.selected)>0;
+    }
+    return hourHasCopy(edition);
+  }
+  function todayHourTarget(){
+    const todayKey=day(Date.now());
+    const ranked=hourRows().filter(item=>day(item.window.startAt)===todayKey).slice().sort((a,b)=>b.window.startAt-a.window.startAt);
+    if(!ranked.length) return null;
+    return ranked.find(hourLooksReadable) || ranked[0];
+  }
+  function canOpenTodayLatest(){
+    const target=todayHourTarget();
+    if(!target || !selectedHourStart) return false;
+    if(day(selectedHourStart)===day(target.window.startAt)) return false;
+    return target.window.startAt>selectedHourStart;
+  }
+  function openTodayLatest(){
+    closePeriodPop();
+    const target=todayHourTarget();
+    if(!target){
+      if(typeof host.navigate==='function') return host.navigate('report');
+      return;
+    }
+    if(day(selectedHourStart)===day(target.window.startAt) && selectedHourStart===target.window.startAt) return;
+    const hour=String(hourClock(target.window.startAt)).padStart(2,'0');
+    if(typeof host.navigate==='function') return host.navigate(`report?hour=${hour}`);
+    dateFilter='';
+    return selectHour(target.window.startAt, 'user');
+  }
   function applyClockRequest(rows){
     if(pendingClockHour==null) return;
     const requested=pendingClockHour;
@@ -854,8 +899,8 @@ export function createInformationTreePage(host) {
     const index=rows.findIndex(item=>item.window.startAt===selectedHourStart);
     if(index<0)return;
     const next=which==='earlier' ? rows[index+1] : rows[index-1];
-    if(!next)return;
-    return selectHour(next.window.startAt, 'user');
+    if(next) return selectHour(next.window.startAt, 'user');
+    if(which==='later' && canOpenTodayLatest()) return openTodayLatest();
   }
   function stepFromInput(input){
     const sense=hourStepSense(input, hourStripMobile());
@@ -937,6 +982,7 @@ export function createInformationTreePage(host) {
     if(!hourDay || !focus) return;
     const focusDay=day(focus.window.startAt), today=day(Date.now()), yesterday=day(Date.now()-86400000);
     hourDay.textContent=focusDay===today ? '今天' : focusDay===yesterday ? '昨天' : monthDay(focus.window.startAt);
+    if(hourToday) hourToday.hidden=focusDay===today || !todayHourTarget();
     if(hourNow) hourNow.hidden=focusDay!==today;
     if(hourYesterday){
       const prev=day(focus.window.startAt-86400000);
@@ -1611,7 +1657,7 @@ export function createInformationTreePage(host) {
   }
   async function renderHourFeed(token,claim) {
     const rows=hourRows();
-    const focused=focusedHourRows(rows);
+    const focused=pendingClockHour!=null ? rowsForPendingClock(rows) : focusedHourRows(rows);
     const pool=focused.length ? focused : rows;
     if(pendingClockHour!=null) applyClockRequest(pool);
     else ensureSelectedHour(pool);
@@ -1650,8 +1696,9 @@ export function createInformationTreePage(host) {
     const hourlyFeed=mode==='hourly' && !showMaterials;
     const dailyFeed=mode==='daily' && !showMaterials;
     if(hourlyFeed){
-      const pool=focusedHourRows(hourRows());
-      const rows=pool.length ? pool : hourRows();
+      const allHours=hourRows();
+      const pool=pendingClockHour!=null ? rowsForPendingClock(allHours) : focusedHourRows(allHours);
+      const rows=pool.length ? pool : allHours;
       if(pendingClockHour!=null) applyClockRequest(rows);
       else ensureSelectedHour(rows);
     }
@@ -1802,9 +1849,12 @@ export function createInformationTreePage(host) {
       host.navigate?.(hour==null ? `report/${prev}` : `report/${prev}?hour=${String(hour).padStart(2,'0')}`);
     });
     hourYesterday.className='tree-hour-yesterday';
+    hourToday=button('今天 ›',()=>openTodayLatest());
+    hourToday.className='tree-hour-today';
+    hourToday.setAttribute('aria-label','今天最新小时报');
     hourMore=button('›',()=>{if(typeof hourChips.scrollBy==='function')hourChips.scrollBy({left:160});else hourChips.scrollLeft=(hourChips.scrollLeft||0)+160;});
     hourMore.className='tree-hour-more';hourMore.setAttribute('aria-label','更早的小时');
-    hourRail.append(hourDay,hourNow,hourChips,hourEarlier,hourYesterday);
+    hourRail.append(hourToday,hourDay,hourNow,hourChips,hourEarlier,hourYesterday);
     dayChips=el('div','','chip-tabs tree-hour-chips');dayChips.setAttribute('aria-label','日报日期');
     periodPop.append(hourRail,dayChips);
     tools=el('div','','tree-tools');

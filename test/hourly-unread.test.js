@@ -1165,3 +1165,81 @@ test('desktop and phone empty hours stay quiet while neighbors still load', asyn
   await open(false, legacyMiss);
   await open(true, legacyMiss);
 });
+
+function shanghaiDayKey(at) {
+  const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(at));
+  return date;
+}
+
+test('a past day can open today latest hour, and a bare hour prefers today', async () => {
+  const midnight = Date.parse(`${shanghaiDayKey(Date.now())}T00:00:00+08:00`);
+  const yesterday = midnight - 24 * HOUR;
+  const yesterdayKey = shanghaiDayKey(yesterday + 12 * HOUR);
+  const at = (base, hour) => base + hour * HOUR;
+  const y23 = edition('edition:yesterday23xx', at(yesterday, 23), ['y23']);
+  const y15 = edition('edition:yesterday15xx', at(yesterday, 15), ['y15']);
+  const t16 = edition('edition:today16empty1', at(midnight, 16), []);
+  const t15 = edition('edition:today15content', at(midnight, 15), ['t15']);
+  const t12 = edition('edition:today12empty01', at(midnight, 12), []);
+  const hours = [t16, t15, t12, y23, y15];
+  const root = new El('div');
+  root.isConnected = true;
+  const routes = [];
+  let page;
+  const host = hostFor('today-entry', () => manifest(hours));
+  host.navigate = (path) => {
+    routes.push(path);
+    if (/^report\?hour=\d{2}$/.test(path)) {
+      const hour = Number(path.slice('report?hour='.length));
+      return page.mount(root, { mode: 'hourly', hour });
+    }
+    return undefined;
+  };
+  page = createInformationTreePage(host);
+  await page.mount(root, { mode: 'hourly', date: yesterdayKey, hour: 23 });
+
+  const todayBtn = root.querySelector('.tree-hour-today');
+  assert.equal(todayBtn.hidden, false);
+  assert.equal(todayBtn.textContent, '今天 ›');
+  assert.equal(todayBtn.getAttribute('aria-label'), '今天最新小时报');
+  assert.ok(root.querySelector('.tree-hour-yesterday'));
+  assert.equal(root.querySelector('[aria-label="下一期"]').disabled, false);
+  assert.equal(root.querySelector('[aria-label="上一期"]').disabled, false);
+
+  await root.querySelector('[aria-label="上一期"]').listeners.click[0]();
+  assert.equal(chip(root, y15.window.startAt).classList.contains('is-active'), true);
+  assert.equal(root.querySelector('.tree-hour-today').hidden, false);
+
+  await page.mount(root, { mode: 'hourly', date: yesterdayKey, hour: 23 });
+  await root.querySelector('[aria-label="下一期"]').listeners.click[0]();
+  assert.equal(routes.at(-1), 'report?hour=15');
+  assert.equal(chip(root, t15.window.startAt).classList.contains('is-active'), true);
+  assert.equal(chip(root, y15.window.startAt), undefined);
+  assert.equal(root.querySelector('.tree-hour-today').hidden, true);
+  assert.equal(root.querySelector('.tree-hour-empty'), null);
+
+  await page.mount(root, { mode: 'hourly', date: yesterdayKey, hour: 23 });
+  await root.querySelector('.tree-hour-today').listeners.click[0]();
+  assert.equal(routes.at(-1), 'report?hour=15');
+  assert.equal(chip(root, t15.window.startAt).classList.contains('is-active'), true);
+
+  await page.mount(root, { mode: 'hourly', date: yesterdayKey, hour: 23 });
+  await page.mount(root, { mode: 'hourly', hour: 15 });
+  assert.equal(chip(root, t15.window.startAt).classList.contains('is-active'), true);
+  assert.equal(chip(root, y15.window.startAt), undefined);
+
+  await page.mount(root, { mode: 'hourly', hour: 12 });
+  assert.equal(root.querySelector('.tree-hour-empty').textContent, '本小时暂无入料');
+
+  await page.mount(root, { mode: 'hourly', hour: 16 });
+  assert.equal(root.querySelector('[aria-label="下一期"]').disabled, true);
+  assert.equal(root.querySelector('.tree-hour-today').hidden, true);
+  assert.equal(root.querySelector('.tree-hour-empty').textContent, '本小时暂无入料');
+
+  routes.length = 0;
+  await page.mount(root, { mode: 'hourly', date: yesterdayKey, hour: 23 });
+  await root.querySelector('.tree-hour-yesterday').listeners.click[0]();
+  assert.match(routes.at(-1), new RegExp(`^report/\\d{4}-\\d{2}-\\d{2}\\?hour=23$`));
+  assert.notEqual(routes.at(-1), `report/${yesterdayKey}?hour=23`);
+  page.stop();
+});

@@ -19,6 +19,8 @@ import {
   mergeReadingHours,
   homeHourSections,
   hourlyEditions,
+  reportHourHref,
+  homeHourMoreStart,
   selectHomeHourHits,
   homeHourItemTime,
   homeHourPublishedNote,
@@ -32,6 +34,27 @@ import {
 const saturdayMorning = Date.parse('2026-10-10T02:00:00Z');
 const fridayMorning = Date.parse('2026-10-09T02:00:00Z');
 const fridayEvening = Date.parse('2026-10-09T10:00:00Z');
+
+test('overview more opens the visible hour, and another day keeps its date', () => {
+  const now = Date.parse('2026-11-02T08:00:00Z');
+  const midnight = shanghaiMidnight(now);
+  const at = (hour) => midnight + hour * 3_600_000;
+  const start = homeHourMoreStart({
+    sections: [{ startAt: at(15), items: [{ title: '今天 15 点' }] }, { startAt: at(14), items: [{ title: '更早' }] }],
+    editions: [{ window: { startAt: at(16) } }, { window: { startAt: at(15) } }],
+  });
+  assert.equal(start, at(15));
+  assert.equal(reportHourHref(start, now), '#report?hour=15');
+  assert.equal(reportHourHref(at(15) - 24 * 3_600_000, now), '#report/2026-11-01?hour=15');
+  const pending = homeHourMoreStart({
+    sections: [],
+    editions: [{ window: { startAt: at(15) - 24 * 3_600_000 } }],
+  });
+  assert.equal(reportHourHref(pending, now), '#report/2026-11-01?hour=15');
+  const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /homeHourMoreStart\(\{ sections, editions \}\)/);
+  assert.match(app, /setView\(moreStart == null \? 'report' : homeHourHref\(moreStart\)\)/);
+});
 
 test('home quote cards follow the Shanghai session, including Saturday', () => {
   assert.equal(preferredOverviewFocus(saturdayMorning), 'us');
@@ -482,7 +505,7 @@ test('home requests are the overview set and not the old feed fan-out', () => {
   assert.match(app, /navId === 'sources'\) return view === 'sources' \|\| view === 'feed' \|\| view === 'market' \|\| view === 'report'/);
   const tree = readFileSync(new URL('../apps/web/public/information-tree.js', import.meta.url), 'utf8');
   assert.match(tree, /function clearHourQuery\(/);
-  assert.match(tree, /if\(mode==='daily'\) clearHourQuery\(\)/);
+  assert.match(tree, /writeBriefMode\(next\)/);
   assert.match(tree, /const choice=r=>r\?\.edition \|\| r\?\.attempt/);
   const css = readFileSync(new URL('../apps/web/public/styles.css', import.meta.url), 'utf8');
   assert.match(css, /\.home-title \{[^}]*white-space: normal/s);
