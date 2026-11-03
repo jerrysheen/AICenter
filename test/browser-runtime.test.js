@@ -238,6 +238,66 @@ test('BrowserSkill keeps waiting while a live page is still moving', async () =>
   ]);
 });
 
+test('BrowserSkill stops after one resync when the caller will not wait out a moving page', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({
+    async runCommand(args) {
+      commands.push(args.slice(1, 4).join(' '));
+      if (args[1] === 'evaluate') {
+        return {
+          code: 1,
+          stdout: JSON.stringify({
+            code: 'permission_denied',
+            message: 'The action\'s observed content changed; synchronize and replan',
+          }),
+          stderr: '',
+        };
+      }
+      if (args[1] === 'cooperate' && args[2] === 'sync') {
+        return { code: 0, stdout: JSON.stringify({ context_id: 'ctx-once' }), stderr: '' };
+      }
+      return { code: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
+    },
+  });
+  await assert.rejects(
+    () => client.evaluate('SESS', 'read()', { moving: 'once' }),
+    /observed content changed/,
+  );
+  assert.deepEqual(commands, [
+    'evaluate read() --session',
+    'cooperate sync --session',
+    'evaluate read() --session',
+  ]);
+});
+
+test('BrowserSkill media refusal refreshes context without waiting in once mode', async () => {
+  const commands = [];
+  const client = createBrowserSkillClient({ async runCommand(args) {
+    commands.push(args[1]);
+    if (args[1] === 'cooperate') return { code: 0, stdout: '{"context_id":"fresh"}' };
+    if (!args.includes('--context')) return { code: 1, stdout: JSON.stringify({ code: 'permission_denied', message: 'The media source changed; synchronize and replan' }) };
+    return { code: 0, stdout: '{"value":42}' };
+  } });
+  assert.equal(await client.evaluate('SESS', 'read()', { moving: 'once' }), 42);
+  assert.deepEqual(commands, ['evaluate', 'cooperate', 'evaluate']);
+});
+
+test('BrowserSkill total deadline aborts a stuck resync and allows the next command', async () => {
+  let stuck = true;
+  const client = createBrowserSkillClient({ async runCommand(args, options) {
+    if (!stuck) return { code: 0, stdout: '{"value":7}' };
+    if (args[1] === 'evaluate') return { code: 1, stdout: JSON.stringify({ message: 'The media source changed; synchronize and replan' }) };
+    return new Promise((_, reject) => options.signal.addEventListener('abort', () => {
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    }, { once: true }));
+  } });
+  const start = Date.now();
+  await assert.rejects(client.evaluate('SESS', 'read()', { timeoutMs: 1000, moving: 'once' }), /bsk timed out/);
+  assert.ok(Date.now() - start < 3000);
+  stuck = false;
+  assert.equal(await client.evaluate('SESS', 'read()'), 7);
+});
+
 test('BrowserSkill narrows the cooperate guard and drops a missing selector once', async () => {
   const commands = [];
   let evaluates = 0;

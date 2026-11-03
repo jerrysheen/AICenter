@@ -379,6 +379,11 @@ export function createJobRunner(options) {
     try {
       log(formatStartupStep('runner-ready', Date.now() - startupAt));
       while (!abortController.signal.aborted) {
+        // Claims and immediately completed handlers can form a continuous chain
+        // of resolved promises. Give browser IPC, HTTP bodies and deadline timers
+        // a turn even while more queued work is available.
+        await new Promise((resolve) => setImmediate(resolve));
+        if (abortController.signal.aborted) break;
         lastTick = Date.now();
         watchdogLogged = false;
         try {

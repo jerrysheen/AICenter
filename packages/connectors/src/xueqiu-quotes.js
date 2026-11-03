@@ -214,7 +214,7 @@ export function createXueqiuQuoteClient(options = {}) {
   let tokenAt = hasUserCookie ? now() : 0;
   const sparklineCache = new Map();
 
-  async function request(url, init = {}, signal) {
+  async function request(url, init = {}, signal, readBody) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onAbort = () => controller.abort();
@@ -234,7 +234,8 @@ export function createXueqiuQuoteClient(options = {}) {
         signal: controller.signal,
       });
       applySetCookie(cookies, response.headers);
-      return response;
+      // Keep the timeout and caller cancellation active until the body is read.
+      return await readBody(response);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw new Error('雪球行情请求超时。');
       throw error;
@@ -267,9 +268,10 @@ export function createXueqiuQuoteClient(options = {}) {
     if (hasUserCookie) return;
     if (!force && cookies.get('xq_a_token') && now() - tokenAt < TOKEN_TTL_MS) return;
     cookies.clear();
-    const response = await request(TOKEN_URL, { headers: { Accept: 'text/html,*/*' } }, signal);
-    if (!response.ok) throw new Error(`雪球匿名令牌 HTTP ${response.status}`);
-    await response.arrayBuffer();
+    await request(TOKEN_URL, { headers: { Accept: 'text/html,*/*' } }, signal, async (response) => {
+      if (!response.ok) throw new Error(`雪球匿名令牌 HTTP ${response.status}`);
+      await response.arrayBuffer();
+    });
     if (!cookies.get('xq_a_token')) throw new Error('未能从雪球获取访问令牌。');
     tokenAt = now();
   }
@@ -278,8 +280,7 @@ export function createXueqiuQuoteClient(options = {}) {
     const url = new URL(BATCH_QUOTE_PATH, `${STOCK_API}/`);
     url.searchParams.set('symbol', xueqiuSymbols.join(','));
     url.searchParams.set('extend', 'detail');
-    const response = await request(url, {}, signal);
-    return quoteItems(await readJson(response, '雪球行情'));
+    return quoteItems(await request(url, {}, signal, (response) => readJson(response, '雪球行情')));
   }
 
   async function fetchQuotes(symbols, options = {}) {
@@ -335,8 +336,7 @@ export function createXueqiuQuoteClient(options = {}) {
     url.searchParams.set('type', 'before');
     url.searchParams.set('count', String(-SPARKLINE_COUNT));
     url.searchParams.set('indicator', 'kline');
-    const response = await request(url, {}, signal);
-    return seriesFromXueqiuKline(await readJson(response, '雪球K线'));
+    return seriesFromXueqiuKline(await request(url, {}, signal, (response) => readJson(response, '雪球K线')));
   }
 
   function rememberedSeries(symbol) {

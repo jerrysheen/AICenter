@@ -161,14 +161,14 @@ test('X home browser client uses BrowserRuntime and stops the session', async ()
   assert.equal(calls.some((item) => item[0] === 'navigate' && String(item[1] || '').includes('/status/')), false);
 });
 
-test('X home actions guard the stable home link instead of the live timeline', async () => {
+test('X home actions guard the post button and do not wait out a moving timeline', async () => {
   const seen = [];
   const runtime = {
     async withSession(_options, callback) {
       return callback({
-        async navigate(url, options) { seen.push(['navigate', url, options?.dependsOn]); },
+        async navigate(url, options) { seen.push(['navigate', url, options?.dependsOn, options?.moving]); },
         async evaluate(expression, options) {
-          seen.push(['evaluate', options?.dependsOn]);
+          seen.push(['evaluate', options?.dependsOn, options?.moving]);
           if (String(expression).includes('tweetText')) {
             return { items: [{ tweet_id: '1', tweet_url: 'https://x.com/u/status/1', text: 'hello', author_handle: 'u' }] };
           }
@@ -181,7 +181,129 @@ test('X home actions guard the stable home link instead of the live timeline', a
   const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 1 });
   assert.equal(result.tweets[0].tweet_id, '1');
   assert.ok(seen.length > 0);
-  assert.ok(seen.every((item) => Array.isArray(item[item.length - 1]) && item[item.length - 1].includes('[data-testid="AppTabBar_Home_Link"]')));
+  assert.ok(seen.every((item) => {
+    const dependsOn = item[0] === 'navigate' ? item[2] : item[1];
+    const moving = item[0] === 'navigate' ? item[3] : item[2];
+    return Array.isArray(dependsOn) && dependsOn.includes('[data-testid="SideNav_NewTweet_Button"]') && moving === 'once';
+  }));
+});
+
+test('X home keeps tweets already read when the timeline keeps moving', async () => {
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(expression) {
+          const source = String(expression);
+          if (source.includes('scrollBy')) {
+            throw new Error('The action\'s observed content changed; synchronize and replan');
+          }
+          if (source.includes('tweetText')) {
+            return { items: [{ tweet_id: '9', tweet_url: 'https://x.com/u/status/9', text: 'kept', author_handle: 'u' }] };
+          }
+          return { url: 'https://x.com/home', title: 'Home', logged_in: true, login_wall: false, selected_tab: 'For you' };
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 5 });
+  assert.equal(result.tweets.length, 1);
+  assert.equal(result.tweets[0].tweet_id, '9');
+  assert.equal(result.deadline, false);
+  assert.equal(result.error, null);
+});
+
+test('X home releases the browser when the first open cannot settle', async () => {
+  const runtime = {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {
+          throw new Error('bsk timed out after 45000ms');
+        },
+        async evaluate() {
+          throw new Error('evaluate should not run');
+        },
+      });
+    },
+  };
+  const client = createXHomeBrowserClient({ browserRuntime: runtime, delay: async () => {} });
+  const result = await client.fetchHomeTimeline({ feed: 'for-you', limit: 5 });
+  assert.equal(result.deadline, true);
+  assert.equal(result.error, 'deadline');
+  assert.equal(result.tweets.length, 0);
+});
+
+test('media changes during scroll keep previously harvested tweets through the service', async () => {
+  const browserRuntime = { async withSession(_options, callback) {
+    return callback({
+      async navigate() {},
+      async evaluate(source) {
+        if (source.includes('scrollBy')) throw new Error('The media source changed; synchronize and replan');
+        if (source.includes('tweetText')) return { items: [{ tweet_id: '99', text: 'retained', author_handle: 'u' }] };
+        return { logged_in: true, selected_tab: 'For you' };
+      },
+    });
+  } };
+  const service = createTwitterService({ browserRuntime, delay: async () => {} });
+  const result = await service.getFeed({ bypassCache: true });
+  assert.equal(result.mode, 'live');
+  assert.equal(result.items[0].externalId, '99');
+});
+
+test('first harvest retries a transient media change and continues past progressing known posts', async () => {
+  let reads = 0;
+  let scrolls = 0;
+  const client = createXHomeBrowserClient({ delay: async () => {}, browserRuntime: {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(source) {
+          if (source.includes('scrollBy')) { scrolls += 1; return {}; }
+          if (!source.includes('tweetText')) return { logged_in: true, selected_tab: 'For you' };
+          reads += 1;
+          if (reads === 1) throw new Error('The media source changed; synchronize and replan');
+          return { items: [{ tweet_id: String(reads), text: 'post', author_handle: 'u' }] };
+        },
+      });
+    },
+  } });
+  const result = await client.fetchHomeTimeline({ limit: 1, excludeExternalIds: Array.from({ length: 11 }, (_, i) => String(i + 1)) });
+  assert.equal(result.tweets[0].tweet_id, '12');
+  assert.equal(scrolls, 10);
+});
+
+test('a transient scroll refusal retries within the same harvest and reaches the next screen', async () => {
+  let scrolls = 0;
+  const client = createXHomeBrowserClient({ delay: async () => {}, browserRuntime: {
+    async withSession(_options, callback) {
+      return callback({
+        async navigate() {},
+        async evaluate(source) {
+          if (source.includes('scrollBy')) {
+            if (++scrolls === 1) throw new Error('The media source changed; synchronize and replan');
+            return {};
+          }
+          if (!source.includes('tweetText')) return { logged_in: true, selected_tab: 'For you' };
+          return { items: [{ tweet_id: scrolls >= 2 ? '2' : '1', text: 'post', author_handle: 'u' }] };
+        },
+      });
+    },
+  } });
+  const result = await client.fetchHomeTimeline({ limit: 2 });
+  assert.deepEqual(result.tweets.map(tweet => tweet.tweet_id), ['1', '2']);
+  assert.equal(scrolls, 2);
+});
+
+test('a deadline with retained tweets remains ingestible', async () => {
+  const service = createTwitterService({ fetchHomeTimeline: async () => ({
+    logged_in: true, error: 'deadline', deadline: true,
+    tweets: [{ tweet_id: '99', text: 'retained', author_handle: 'u' }],
+  }) });
+  const result = await service.getFeed();
+  assert.equal(result.mode, 'live');
+  assert.equal(result.deadline, true);
+  assert.equal(result.items.length, 1);
 });
 
 test('show more click matches the label the extractor already counts', () => {

@@ -38,6 +38,32 @@ function response(body, { status = 200, headers = {} } = {}) {
 const TENCENT_AAPL = '200~苹果~AAPL.OQ~345.95~342.96~346.95~6332086~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~~2026-10-15 09:52:59~2.99~0.87~347.85~345.05~USD~6332086';
 const SINA_SOX = '费交所半导体股指数,11229.6629,-3.89,2026-10-15 21:53:06,-454.7196,11280.8886,11406.3848,11203.0740,14655.2861,6160.0449,0,0,0,0.00,--,0.00,0.00,0.00,0.00,0,0,0.0000,0.00,0.00,,Oct 15 09:53AM EDT,11684.3825,0,1,2026';
 
+test('Yahoo body timeout reaches fallback and does not pin the shared quote queue', async () => {
+  let calls = 0;
+  let backups = 0;
+  const client = createYahooClient({
+    timeoutMs: 30, minIntervalMs: 0, log() {},
+    fallback: { async fetchQuotes(symbols) {
+      backups += 1;
+      return symbols.map(symbol => ({ symbol, lastPrice: 7, session: 'regular' }));
+    } },
+    async fetchImpl(_url, { signal }) {
+      calls += 1;
+      if (calls > 1) return response(JSON.stringify({ spark: { result: [spark('MSFT', 8)] } }));
+      return { ok: true, async json() {
+        return new Promise((_, reject) => signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted body'), { name: 'AbortError' }));
+        }, { once: true }));
+      } };
+    },
+  });
+  assert.equal((await client.fetchQuotes(['AAPL'])).quotes[0].lastPrice, 7);
+  assert.equal(backups, 1);
+  const before = calls;
+  assert.equal((await client.fetchQuotes(['MSFT'])).quotes[0].lastPrice, 8);
+  assert.ok(calls > before);
+});
+
 test('US symbol map and live Tencent / Sina fields', () => {
   assert.equal(yahooToTencentUs('^GSPC'), 'us.INX');
   assert.equal(yahooToTencentUs('^DJI'), 'us.DJI');

@@ -571,17 +571,28 @@ const EXTRACT_TIMEOUT_MS = 45_000;
 const FOLLOWING_EXPAND_CAP = 16;
 const FOR_YOU_TRUNCATED_CAP = 8;
 const EXPAND_TIME_RESERVE_MS = 45_000;
+const SCROLL_BUDGET_MS = 70_000;
+const SCROLL_ROUNDS = 20;
 // For You keeps inserting tweets. A whole-page cooperate guard treats that as
-// a stale snapshot and refuses the action. The home link stays put, so the
-// guard covers the decision without covering the live timeline.
-const X_HOME_DEPENDS_ON = ['[data-testid="AppTabBar_Home_Link"]'];
+// a stale snapshot and refuses the action. The Home link's unread badge also
+// changes, so guarding that link still expires. The Post button stays put and
+// does not include the timeline. A moving page syncs once and then stops;
+// tweets already read are kept, and this session does not sit on the browser.
+const X_HOME_DEPENDS_ON = ['[data-testid="SideNav_NewTweet_Button"]'];
 
 function stepOptions(timeoutMs, budget) {
   return {
     timeoutMs,
     ...(budget?.signal ? { signal: budget.signal } : {}),
     dependsOn: X_HOME_DEPENDS_ON,
+    moving: 'once',
   };
+}
+
+function pageMoved(error) {
+  const message = String(error?.message || '');
+  return /observed content changed|observed page or control state changed|latest cooperate sync|synchronize and replan|cooperation_sync_required|bsk timed out/i.test(message)
+    || error?.details?.kind === 'timeout';
 }
 
 function abortedError(error) {
@@ -821,24 +832,53 @@ export function createXHomeBrowserClient(options = {}) {
             error: 'deadline', deadline: true,
           };
         }
-        await session.navigate('https://x.com/home', {
-          ...stepOptions(homeTimeout, budget),
-          waitUntil: 'domcontentloaded',
+        const unfinished = (inspect) => ({
+          source: 'browser_runtime_home',
+          feed,
+          logged_in: Boolean(inspect?.logged_in),
+          login_wall: Boolean(inspect?.login_wall),
+          page_url: inspect?.url || null,
+          page_title: inspect?.title || null,
+          selected_tab: inspect?.selected_tab || null,
+          tweet_count: 0,
+          tweets: [],
+          error: 'deadline',
+          deadline: true,
         });
+        try {
+          await session.navigate('https://x.com/home', {
+            ...stepOptions(homeTimeout, budget),
+            waitUntil: 'domcontentloaded',
+          });
+        } catch (error) {
+          if (abortedError(error)) throw error;
+          if (pageMoved(error)) return unfinished(null);
+          throw error;
+        }
         if (!stop()) await wait(3_500, signal);
         const inspectTimeout = () => commandTimeout(EXTRACT_TIMEOUT_MS, deadlineAt);
         const inspectHome = async () => {
           const timeoutMs = inspectTimeout();
           if (!timeoutMs) return null;
-          let inspect = await session.evaluate(buildPageInspectExpression(feed), stepOptions(timeoutMs, budget));
-          if (inspect?.clicked_tab && !stop()) {
-            await wait(2_500, signal);
-            const again = inspectTimeout();
-            if (again) inspect = { ...inspect, ...(await session.evaluate(buildPageInspectExpression(feed), stepOptions(again, budget))), clicked_tab: inspect.clicked_tab };
+          try {
+            let inspect = await session.evaluate(buildPageInspectExpression(feed), stepOptions(timeoutMs, budget));
+            if (inspect?.clicked_tab && !stop()) {
+              await wait(2_500, signal);
+              const again = inspectTimeout();
+              if (again) inspect = { ...inspect, ...(await session.evaluate(buildPageInspectExpression(feed), stepOptions(again, budget))), clicked_tab: inspect.clicked_tab };
+            }
+            return inspect;
+          } catch (error) {
+            if (abortedError(error)) throw error;
+            if (pageMoved(error)) return null;
+            throw error;
           }
-          return inspect;
         };
-        let inspect = stop() ? null : await inspectHome();
+        let inspect = null;
+        for (let attempt = 0; attempt < 3 && !stop() && !inspect; attempt += 1) {
+          inspect = await inspectHome();
+        }
+        if (!inspect) return unfinished(null);
         if (!stop() && inspectMatchesRequestedFeed(inspect, feed) === false) {
           inspect = await inspectHome();
         }
@@ -858,21 +898,67 @@ export function createXHomeBrowserClient(options = {}) {
           };
         }
         let items = [];
-        const harvest = () => harvestTweets(session, budget);
+        let readPage = false;
+        const observedIds = new Set();
+        const harvest = (readBudget = budget) => harvestTweets(session, readBudget);
         const merge = (current, incoming) => mergeTweets(current, incoming, parsedLimit, { excludeExternalIds: exclude });
-        if (!stop()) items = merge(items, await harvest());
+        const take = async (readBudget) => {
+          try {
+            const incoming = await harvest(readBudget);
+            readPage = true;
+            for (const tweet of incoming) {
+              if (tweet.tweet_id) observedIds.add(String(tweet.tweet_id));
+            }
+            items = merge(items, incoming);
+            return true;
+          } catch (error) {
+            if (abortedError(error)) {
+              if (!readPage) throw error;
+              stoppedEarly = true;
+              return false;
+            }
+            if (pageMoved(error)) return false;
+            throw error;
+          }
+        };
+        if (!stop()) {
+          let opened = false;
+          for (let attempt = 0; attempt < 3 && !stop() && !opened; attempt += 1) opened = await take();
+          if (!opened && !readPage) return unfinished(inspect);
+        }
         let stale = 0;
-        const maxRounds = exclude.length ? 20 : 8;
-        for (let round = 0; round < maxRounds && items.length < parsedLimit; round += 1) {
-          if (stop()) break;
-          const scrollTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, deadlineAt);
+        let movingFailures = 0;
+        const scrollUntil = Math.min(Date.now() + SCROLL_BUDGET_MS, Number(deadlineAt) || Infinity);
+        const scrollBudget = { ...budget, deadlineAt: scrollUntil };
+        for (let round = 0; round < SCROLL_ROUNDS && items.length < parsedLimit; round += 1) {
+          if (stop() || Date.now() >= scrollUntil) break;
+          const scrollTimeout = commandTimeout(EXTRACT_TIMEOUT_MS, scrollUntil);
           if (!scrollTimeout) { stoppedEarly = true; break; }
-          const before = items.length;
-          await session.evaluate(buildScrollExpression(), stepOptions(scrollTimeout, budget));
-          await wait(1_800, signal);
+          const before = observedIds.size;
+          try {
+            await session.evaluate(buildScrollExpression(), stepOptions(scrollTimeout, scrollBudget));
+          } catch (error) {
+            if (abortedError(error)) { stoppedEarly = true; break; }
+            if (pageMoved(error)) {
+              if (++movingFailures >= 3) break;
+              continue;
+            }
+            throw error;
+          }
+          try { await wait(Math.min(1_800, Math.max(0, scrollUntil - Date.now())), signal); }
+          catch (error) {
+            if (!abortedError(error)) throw error;
+            stoppedEarly = true;
+            break;
+          }
           if (stop()) break;
-          items = merge(items, await harvest());
-          if (items.length === before) {
+          const scrolled = await take(scrollBudget);
+          if (!scrolled) {
+            if (stoppedEarly || ++movingFailures >= 3) break;
+            continue;
+          }
+          movingFailures = 0;
+          if (observedIds.size === before) {
             stale += 1;
             if (stale >= 2) break;
           } else {
@@ -900,7 +986,7 @@ export function createXHomeBrowserClient(options = {}) {
                 focusPlan = selectFocusExpansions(items, scored);
               }
             } catch (error) {
-              if (abortedError(error)) throw error;
+              if (abortedError(error)) stoppedEarly = true;
               focusPlan = feed === 'following'
                 ? { mode: 'following', items }
                 : fallbackFocusExpansions(items, options.focusKeywords || []);
@@ -939,7 +1025,7 @@ export function createXHomeBrowserClient(options = {}) {
               else reason = 'still-truncated';
             }
           } catch (error) {
-            if (abortedError(error) || captureStopped(budget.signal, budget.deadlineAt)) {
+            if (abortedError(error) || pageMoved(error) || captureStopped(budget.signal, budget.deadlineAt)) {
               reason = 'deadline';
               completed = tweet;
               bump(reason);
@@ -968,8 +1054,14 @@ export function createXHomeBrowserClient(options = {}) {
         const withArticles = items.filter((item) => selected(item) && looksLikeArticleTweet(item)).slice(0, 12);
         for (const tweet of withArticles) {
           if (stop()) break;
-          const completed = await completeArticleTweet(session, tweet, budget);
-          items = items.map((item) => (item.tweet_id === tweet.tweet_id ? { ...completed, x_focus: item.x_focus } : item));
+          try {
+            const completed = await completeArticleTweet(session, tweet, budget);
+            items = items.map((item) => (item.tweet_id === tweet.tweet_id ? { ...completed, x_focus: item.x_focus } : item));
+          } catch (error) {
+            if (abortedError(error)) { stoppedEarly = true; break; }
+            if (pageMoved(error)) break;
+            throw error;
+          }
         }
         const needsComments = items.filter((item) => {
           const replies = Number(item.reply_count);

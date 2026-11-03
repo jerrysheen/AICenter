@@ -182,7 +182,7 @@ export function createTwitterService(options = {}) {
         const items = blocked ? [] : (result.tweets || []).map((tweet) => tweetToFeedItem(tweet, { feed: parsedFeed }));
         const loginRequired = result.error === 'login_required';
         const tabMismatch = result.error === 'feed_tab_mismatch';
-        const timedOut = result.error === 'deadline' || (result.deadline === true && !items.length && !result.error);
+        const timedOut = !items.length && (result.error === 'deadline' || (result.deadline === true && !result.error));
         const note = blocked
           ? explainXConnectorError(new Error('HTTPS 451'))
           : loginRequired

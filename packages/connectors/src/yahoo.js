@@ -661,7 +661,7 @@ export function createYahooClient(options = {}) {
     return transport;
   }
 
-  async function request(url, { withCrumb = true, cookieHeader = cookie, accept = 'application/json', signal } = {}) {
+  async function request(url, { withCrumb = true, cookieHeader = cookie, accept = 'application/json', signal, readBody = (response) => response.json() } = {}) {
     const target = url instanceof URL ? new URL(url.href) : new URL(String(url));
     if (withCrumb && crumb) target.searchParams.set('crumb', crumb);
     const headers = { ...YAHOO_HEADERS, Accept: accept };
@@ -683,7 +683,7 @@ export function createYahooClient(options = {}) {
         if (response.status === 429) error.retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), Date.now());
         throw error;
       }
-      return response;
+      return await readBody(response);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         if (signal?.aborted) {
@@ -701,8 +701,7 @@ export function createYahooClient(options = {}) {
   }
 
   async function requestJson(url, requestOptions) {
-    const response = await request(url, requestOptions);
-    return response.json();
+    return request(url, requestOptions);
   }
 
   function refreshCrumb() {
@@ -723,17 +722,17 @@ export function createYahooClient(options = {}) {
         cache: 'no-store',
         signal: controller.signal,
       });
+      await cookieResponse.arrayBuffer();
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw new Error('Yahoo 行情请求超时。');
       throw error;
     } finally {
       clearTimeout(timer);
     }
-    await cookieResponse.arrayBuffer().catch(() => {});
     const nextCookie = cookieHeaderFrom(cookieResponse);
     if (!nextCookie) throw new Error('Yahoo 没有返回 cookie');
-    const crumbResponse = await request(CRUMB_URL, { withCrumb: false, cookieHeader: nextCookie, accept: 'text/plain' });
-    const value = (await crumbResponse.text()).trim().replace(/^"|"$/g, '');
+    const crumbText = await request(CRUMB_URL, { withCrumb: false, cookieHeader: nextCookie, accept: 'text/plain', readBody: (response) => response.text() });
+    const value = crumbText.trim().replace(/^"|"$/g, '');
     if (!value || value.includes('<') || value.length > 128) throw new Error('Yahoo crumb 无效');
     cookie = nextCookie;
     crumb = value;

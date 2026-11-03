@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-11-03-browser-and-quotes-recovery.md`：X 媒体变动保留已读帖、按观察 ID 翻过旧帖；BrowserSkill 重试共用总时限，雪球/Yahoo 超时覆盖正文。Worker 让出事件循环，YouTube 翻译判断改为索引精确查询，避免启动扫描拖住采集和行情。专项 178/178；全仓检查仍有失败，详见记录。需要重载 Web/Worker。
+
 - `progress/2026-11-02-hourly-today-entry.md`：停在昨天时，期数菜单和「下一期」能进今天最新有内容的小时。总览「小时报 → 更多」打开正在看的那一小时，同一钟点优先今天。不新增 migration。需要重启 Web。
 - `progress/2026-11-01-x-for-you-page-guard.md`：X 首页动作只核对左侧 Home 链接，推荐流插帖不再把整页快照判过期。页面仍在动时先 wait，命令时限内最多 6 次。不新增 migration。只需要重启 Worker。
 

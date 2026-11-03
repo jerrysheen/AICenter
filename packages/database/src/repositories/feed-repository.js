@@ -2410,11 +2410,18 @@ export function createFeedRepository(database, emitEvent) {
       const id = String(itemId || '').trim();
       if (!id) return false;
       if (/^youtube:/i.test(id)) return true;
-      const row = database.prepare(`SELECT 1 AS hit FROM content_items ci
+      // Separate the two identities so SQLite can use the primary/unique
+      // indexes. OR plus string concatenation scanned the entire content pool
+      // for every non-YouTube translation in startup maintenance.
+      const direct = database.prepare(`SELECT 1 AS hit FROM content_items ci
         JOIN captures c ON c.id = ci.capture_id AND c.workspace_id = ci.workspace_id
-        WHERE ci.workspace_id = ? AND c.provider = 'youtube'
-          AND (ci.id = ? OR c.external_id = ? OR ('youtube:' || c.external_id) = ?)
-        LIMIT 1`).get(workspaceId, id, id.replace(/^youtube:/i, ''), id);
+        WHERE ci.id = ? AND ci.workspace_id = ? AND c.provider = 'youtube'
+        LIMIT 1`).get(id, workspaceId);
+      if (direct) return true;
+      const row = database.prepare(`SELECT 1 AS hit FROM captures c
+        JOIN content_items ci ON ci.capture_id = c.id AND ci.workspace_id = c.workspace_id
+        WHERE c.workspace_id = ? AND c.provider = 'youtube' AND c.external_id = ?
+        LIMIT 1`).get(workspaceId, id);
       return Boolean(row);
     },
 

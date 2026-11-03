@@ -59,6 +59,26 @@ function xueqiuItem(symbol, current, lastClose, extras = {}) {
   };
 }
 
+test('Xueqiu body timeout releases the read so the next quote request succeeds', async () => {
+  let calls = 0;
+  const client = createXueqiuQuoteClient({
+    cookie: 'xq_a_token=fixture', timeoutMs: 30,
+    async fetchImpl(_url, { signal }) {
+      calls += 1;
+      if (calls > 1) return jsonResponse({ data: { items: [xueqiuItem('SH600000', 10, 9)] } });
+      return { ok: true, status: 200, async arrayBuffer() {
+        return new Promise((_, reject) => signal.addEventListener('abort', () => {
+          reject(Object.assign(new Error('aborted body'), { name: 'AbortError' }));
+        }, { once: true }));
+      } };
+    },
+  });
+  assert.deepEqual(await client.fetchQuotes(['600000.SS']), []);
+  const result = await client.fetchQuotes(['600000.SS']);
+  assert.equal(result[0].lastPrice, 10);
+  assert.equal(calls, 2);
+});
+
 test('yahoo symbols map to xueqiu codes across A shares ETFs B shares and HK', () => {
   assert.equal(yahooToXueqiuSymbol('516640.SS'), 'SH516640');
   assert.equal(yahooToXueqiuSymbol('300346.SZ'), 'SZ300346');

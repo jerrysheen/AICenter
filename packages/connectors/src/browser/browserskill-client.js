@@ -238,7 +238,7 @@ export function createBrowserSkillClient(options = {}) {
 
   function refusalKind(error) {
     const message = String(error?.message || '');
-    if (/observed content changed|observed page or control state changed/i.test(message)) return 'moving';
+    if (/observed content changed|observed page or control state changed|media source changed/i.test(message)) return 'moving';
     if (/context returned by the latest cooperate sync|cooperation_sync_required|synchronize and replan/i.test(message)) return 'context';
     return '';
   }
@@ -270,7 +270,8 @@ export function createBrowserSkillClient(options = {}) {
           ['cooperate', 'wait', '--session', String(sessionId), '--timeout-ms', '8000'],
           { timeoutMs: 20_000, signal: commandOptions.signal },
         );
-      } catch {
+      } catch (error) {
+        if (commandOptions.signal?.aborted) throw error;
         // A missed wait still leaves the following sync able to refresh the page.
       }
     }
@@ -291,17 +292,45 @@ export function createBrowserSkillClient(options = {}) {
   // because a live timeline can stay stale for more than two tries.
   // `--depends-on` narrows that guard to the named regions. A missing selector
   // drops the narrowing once and retries against the whole page.
+  // moving:'once' is for a page that will not sit still: sync once, do not add
+  // the 8s wait, and stop after the retry so the caller can keep what it read.
   async function runShared(sessionId, args, commandOptions = {}) {
+    const budget = Math.max(1_000, Number(commandOptions.timeoutMs) || timeoutMs);
+    const controller = new AbortController();
+    const signal = commandOptions.signal
+      ? AbortSignal.any([commandOptions.signal, controller.signal]) : controller.signal;
+    const timer = setTimeout(() => controller.abort(), budget);
+    try {
+      return await runSharedAttempts(sessionId, args, { ...commandOptions, signal }, Date.now() + budget);
+    } catch (error) {
+      if (commandOptions.signal?.aborted) throw abortError();
+      if (controller.signal.aborted) {
+        throw new BrowserCommandError(`bsk timed out after ${budget}ms`, { kind: 'timeout' });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function runSharedAttempts(sessionId, args, commandOptions, deadlineAt) {
     let context = '';
     let dependsOn = listedDepends(commandOptions.dependsOn);
     let droppedDepends = false;
     let lastError = null;
-    const started = Date.now();
-    const budget = Math.max(1_000, Number(commandOptions.timeoutMs) || timeoutMs);
+    const fastMove = commandOptions.moving === 'once';
     const maxAttempts = 6;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (commandOptions.signal.aborted) throw abortError();
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) throw new BrowserCommandError('bsk timed out', { kind: 'timeout' });
       try {
-        return await run(commandArgs(args, context, dependsOn), commandOptions);
+        const boundedArgs = commandArgs(args, context, dependsOn);
+        const timeoutIndex = boundedArgs.indexOf('--timeout');
+        if (timeoutIndex >= 0 && Number.parseInt(boundedArgs[timeoutIndex + 1], 10) > remaining) {
+          boundedArgs[timeoutIndex + 1] = `${remaining}ms`;
+        }
+        return await run(boundedArgs, { ...commandOptions, timeoutMs: remaining });
       } catch (error) {
         lastError = error;
         if (dependsOn.length && !droppedDepends && selectorMissing(error)) {
@@ -311,10 +340,12 @@ export function createBrowserSkillClient(options = {}) {
           continue;
         }
         const kind = refusalKind(error);
-        if (!kind || attempt === maxAttempts - 1 || Date.now() - started >= budget) throw error;
+        const moveBudgetSpent = fastMove && kind && attempt >= 1;
+        if (!kind || moveBudgetSpent || attempt === maxAttempts - 1 || Date.now() >= deadlineAt || commandOptions.signal.aborted) throw error;
         try {
-          context = await readContext(sessionId, commandOptions, kind === 'moving' || attempt > 0);
-        } catch {
+          context = await readContext(sessionId, commandOptions, fastMove ? false : (kind === 'moving' || attempt > 0));
+        } catch (syncError) {
+          if (commandOptions.signal.aborted) throw syncError;
           throw error;
         }
         if (!context) throw error;
@@ -379,6 +410,7 @@ export function createBrowserSkillClient(options = {}) {
         timeoutMs: limit + 20_000,
         signal: navigateOptions.signal,
         dependsOn: navigateOptions.dependsOn,
+        moving: navigateOptions.moving,
       });
     },
 
@@ -387,7 +419,12 @@ export function createBrowserSkillClient(options = {}) {
       const payload = await runShared(
         sessionId,
         ['evaluate', String(expression), '--session', String(sessionId), '--timeout', `${Math.floor(evaluateTimeoutMs)}ms`],
-        { timeoutMs: evaluateTimeoutMs, signal: evaluateOptions.signal, dependsOn: evaluateOptions.dependsOn },
+        {
+          timeoutMs: evaluateTimeoutMs,
+          signal: evaluateOptions.signal,
+          dependsOn: evaluateOptions.dependsOn,
+          moving: evaluateOptions.moving,
+        },
       );
       if (payload && payload.ok === false) {
         const text = String(payload.error?.text || 'evaluate failed');
@@ -402,6 +439,7 @@ export function createBrowserSkillClient(options = {}) {
         timeoutMs: clickOptions.timeoutMs || timeoutMs,
         signal: clickOptions.signal,
         dependsOn: clickOptions.dependsOn,
+        moving: clickOptions.moving,
       });
     },
 
@@ -416,6 +454,7 @@ export function createBrowserSkillClient(options = {}) {
         timeoutMs: fillOptions.timeoutMs || timeoutMs,
         signal: fillOptions.signal,
         dependsOn: fillOptions.dependsOn,
+        moving: fillOptions.moving,
       });
     },
 
