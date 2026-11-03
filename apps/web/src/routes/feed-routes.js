@@ -284,6 +284,12 @@ export function createFeedRoutes({ slots = createPreparedSlotStore(), offthread 
             return;
           }
           const mediaJob = providerId === 'media' && query.refresh ? services.runtime.requestMediaSync({ workspaceId, channel: query.channel }) : null;
+          if (providerId === 'media' && offthread?.canReadMedia?.()) {
+            return sendOffthreadJson(offthread, request, response, {
+              kind: 'media-feed', workspace: workspaceId, query,
+              ...(mediaJob ? { jobId: mediaJob.id } : {}),
+            }, { 'Cache-Control': 'private, no-cache' });
+          }
           const prebuilt = STORED_FEED_CACHE_PROVIDERS.has(providerId) && !mediaJob
             ? feedPrebuiltSlot(providerId, query)
             : '';

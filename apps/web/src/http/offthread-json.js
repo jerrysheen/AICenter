@@ -10,6 +10,7 @@ export function startOffthreadJson({
   pipeline = 'legacy',
   timezone = 'Asia/Shanghai',
   ttlMs = DEFAULT_TTL_MS,
+  mediaSettings = null,
 } = {}) {
   let worker = null;
   let failed = false;
@@ -29,19 +30,21 @@ export function startOffthreadJson({
   }
 
   function ensure() {
-    if (worker || failed) return worker;
+    if (failed) return null;
+    if (worker) return worker;
     if (!databasePath || databasePath === ':memory:' || !existsSync(databasePath)) {
       failed = true;
       return null;
     }
     try {
       worker = new Worker(new URL('./offthread-json-worker.js', import.meta.url), {
-        workerData: { databasePath, pipeline, timezone },
+        workerData: { databasePath, pipeline, timezone, mediaSettings },
       });
     } catch {
       failed = true;
       return null;
     }
+    const current = worker;
     worker.on('message', (message) => {
       if (message?.type === 'ready') {
         booted = true;
@@ -72,6 +75,14 @@ export function startOffthreadJson({
       failAll(error);
       const pending = readyWaiters.splice(0);
       for (const resolve of pending) resolve(false);
+    });
+    worker.on('exit', () => {
+      if (worker !== current) return;
+      worker = null;
+      failed = true;
+      booted = false;
+      failAll(new Error('离线读取线程已退出'));
+      for (const resolve of readyWaiters.splice(0)) resolve(false);
     });
     return worker;
   }
@@ -116,7 +127,8 @@ export function startOffthreadJson({
       waiters.set(id, {
         timer,
         resolve: (value) => {
-          if (value.status === 200) cache.set(key, { value, expires: Date.now() + ttlMs });
+          // Media read/saved state must be visible on the next list request.
+          if (value.status === 200 && task.kind !== 'media-feed') cache.set(key, { value, expires: Date.now() + ttlMs });
           resolve(value);
         },
         reject,
@@ -130,17 +142,21 @@ export function startOffthreadJson({
       }
     });
     inflight.set(key, promise);
-    promise.finally(() => {
+    const clearInflight = () => {
       if (inflight.get(key) === promise) inflight.delete(key);
-    });
+    };
+    promise.then(clearInflight, clearInflight);
     return promise;
   }
 
   return {
     build,
     ready,
+    canReadMedia: () => Boolean(mediaSettings) && !failed && Boolean(databasePath) && databasePath !== ':memory:',
     stop() {
+      failed = true;
       failAll(new Error('离线读取已停止'));
+      for (const resolve of readyWaiters.splice(0)) resolve(false);
       const current = worker;
       worker = null;
       return current ? current.terminate() : Promise.resolve();

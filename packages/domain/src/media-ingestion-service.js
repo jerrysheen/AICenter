@@ -315,7 +315,9 @@ export function createMediaIngestionService({
       const page = mediaRepository.listFeedPage(workspaceId, {
         channel: wanted, sourceKey, view, offset, before,
         limit: before ? pageLimit + 1 : pageLimit,
-        excludedExternalIds: qualityExcluded(workspaceId),
+        excludedExternalIds: strictAdmission ? [] : qualityExcluded(workspaceId),
+        approvedExternalIds: strictAdmission
+          ? (feedRepository?.listQualityApprovedExternalIds?.(workspaceId, 'media') || []) : null,
         extractorVersion,
       });
       const hasMore = Boolean(before) && page.rows.length > pageLimit;

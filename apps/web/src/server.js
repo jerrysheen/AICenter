@@ -382,6 +382,10 @@ export function createAiCenterServer(options = {}) {
   const offthread = startOffthreadJson({
     databasePath: instance.databasePath,
     pipeline: env.AI_CENTER_INFORMATION_PIPELINE === 'tree-v3' ? 'tree-v3' : 'legacy',
+    mediaSettings: options.services || options.mediaService ? null : {
+      config: mediaConfig,
+      strictAdmission: feedFilter?.config?.mode === 'enforce' && feedFilter.config.rule === 'all-three-0.60',
+    },
   });
   const router = createRouter(createApiRoutes({ slots: preparedSlots, offthread }));
   const { cookieName, secureCookieName } = createInstanceCookieNames(instance);

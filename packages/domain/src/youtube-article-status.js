@@ -95,6 +95,7 @@ function sameDay(left, right) {
 }
 
 export function formatArticleWhen(atMs, nowMs, timeZone = 'Asia/Shanghai') {
+  if (atMs === null || atMs === undefined || atMs === '') return '';
   const at = Number(atMs);
   const now = Number(nowMs);
   if (!Number.isFinite(at) || !Number.isFinite(now)) return '';
@@ -155,11 +156,11 @@ export function describeYoutubeArticle({
   const translated = Number(done) || 0;
   const sections = Number(organized) || 0;
   const count = Number(total) || 0;
-  const when = formatArticleWhen(nextAt, now, timeZone);
   const base = { done: translated, organized: sections, total: count, holdReason: hold, nextAt: nextAt || null };
   if (status === 'ready') {
     return { status: 'ready', message: '', done: translated, organized: sections, total: count, holdReason: '', nextAt: nextAt || null };
   }
+  const when = formatArticleWhen(nextAt, now, timeZone);
   if (hold === 'failed' || hold === 'login' || hold === 'page') {
     const reason = FAIL_REASON[hold] || '整理没有完成';
     const retry = when ? `${schedulePhrase(when, '将于')} 重试` : '';

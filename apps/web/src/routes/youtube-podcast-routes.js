@@ -10,7 +10,7 @@ export function createYoutubePodcastRoutes() {
       method: 'GET',
       path: '/api/v1/youtube-podcasts',
       handler({ response, services, identity }) {
-        json(response, 200, { ok: true, ...services.youtubePodcasts.list(workspaceIdFrom(identity)) });
+        return json(response, 200, { ok: true, ...services.youtubePodcasts.list(workspaceIdFrom(identity)) }, {}, { compress: true });
       },
     },
     {

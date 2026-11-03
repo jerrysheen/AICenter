@@ -223,28 +223,50 @@ export function selectBargoGpuRates(html) {
   return { ...priced, warnings, quoteDate };
 }
 
-async function readText(fetchImpl, url) {
-  const response = await fetchImpl(url, {
-    headers: { accept: 'text/html,application/xhtml+xml', 'user-agent': USER_AGENT },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok) {
-    const host = new URL(url).host;
-    throw new Error(`${host} ${response.status}`);
+async function readText(fetchImpl, url, { signal, timeoutMs = 20_000 } = {}) {
+  if (signal?.aborted) throw signal.reason || new Error('GPU 报价请求已取消');
+  const controller = new AbortController();
+  let rejectCancelled;
+  const cancelled = new Promise((_, reject) => { rejectCancelled = reject; });
+  const onAbort = () => {
+    const error = signal.reason || new Error('GPU 报价请求已取消');
+    controller.abort(error);
+    rejectCancelled(error);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => {
+    const error = Object.assign(new Error(`GPU 报价请求超过 ${timeoutMs}ms`), { name: 'TimeoutError' });
+    controller.abort(error);
+    rejectCancelled(error);
+  }, timeoutMs);
+  const read = (async () => {
+    const response = await fetchImpl(url, {
+      headers: { accept: 'text/html,application/xhtml+xml', 'user-agent': USER_AGENT },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const host = new URL(url).host;
+      throw new Error(`${host} ${response.status}`);
+    }
+    const html = await response.text();
+    if (/Just a moment|cf-challenge|challenge-platform\/scripts/i.test(html) && !/<table|\/gpu\/h100|Across\s+\d+\s+providers/i.test(html)) {
+      throw new Error(`${new URL(url).host} 返回了拦截页`);
+    }
+    return html;
+  })();
+  try { return await Promise.race([read, cancelled]); }
+  finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
-  const html = await response.text();
-  if (/Just a moment|cf-challenge|challenge-platform\/scripts/i.test(html) && !/<table|\/gpu\/h100|Across\s+\d+\s+providers/i.test(html)) {
-    throw new Error(`${new URL(url).host} 返回了拦截页`);
-  }
-  return html;
 }
 
-export async function fetchCcirGpuRates({ fetch: fetchImpl = fetch } = {}) {
-  return selectCcirGpuRates(await readText(fetchImpl, CCIR_RATES_URL));
+export async function fetchCcirGpuRates({ fetch: fetchImpl = fetch, signal, timeoutMs } = {}) {
+  return selectCcirGpuRates(await readText(fetchImpl, CCIR_RATES_URL, { signal, timeoutMs }));
 }
 
-export async function fetchBargoGpuRates({ fetch: fetchImpl = fetch } = {}) {
-  return selectBargoGpuRates(await readText(fetchImpl, BARGO_PRICES_URL));
+export async function fetchBargoGpuRates({ fetch: fetchImpl = fetch, signal, timeoutMs } = {}) {
+  return selectBargoGpuRates(await readText(fetchImpl, BARGO_PRICES_URL, { signal, timeoutMs }));
 }
 
 async function mapLimited(items, limit, visit) {
@@ -261,18 +283,19 @@ async function mapLimited(items, limit, visit) {
   return results;
 }
 
-export async function fetchGpuEconomyRates({ fetch: fetchImpl = fetch, urls = GPUECONOMY_GPU_URLS } = {}) {
+export async function fetchGpuEconomyRates({ fetch: fetchImpl = fetch, urls = GPUECONOMY_GPU_URLS, signal, timeoutMs } = {}) {
   const warnings = [];
   const entries = [];
   const filtered = [];
   const dates = [];
   const results = await mapLimited(urls, 3, async (url) => {
     try {
-      return { url, html: await readText(fetchImpl, url) };
+      return { url, html: await readText(fetchImpl, url, { signal, timeoutMs }) };
     } catch (error) {
       return { url, error };
     }
   });
+  if (signal?.aborted) throw signal.reason || new Error('GPU 报价请求已取消');
   for (const result of results) {
     if (result.error) {
       warnings.push(`${result.url} ${result.error.message || result.error}`);

@@ -1,5 +1,7 @@
 # 模块架构 V1
 
+媒体列表的 HTTP 投影复用 Web 既有的 `offthread-json` 读取线程。Composition Root 将同一份 Instance 媒体目录和准入模式注入线程，线程仍经 Media Service / Repository 读取，不做外部抓取。刷新请求继续只派发既有 Worker Job。媒体列表不使用线程响应 TTL 缓存，下一次读取要反映已读、隐藏及准入变化；读取线程退出后快速失败，不能继续等待已退出的通道。页面 DTO 和 Domain ownership 不变。
+
 原文全文翻译使用独立 Gemma 31B/26B Connector 与持久化配额，不回退其他模型。HTTP 仅提交已注册 `feed.translation.run` Worker 任务，沿用 Feed Service/Repository 保存译文和 Outbox；Article Normalize、Tag、小时/日报保持原路径。兼容和限制见 `gemma-original-translation.md`。
 
 用户后续授权翻译五账号并发：仅 `feed.translation.run` 使用内部 `translationLimit` 的最多五个 Worker 执行位。默认池只有 26B，`thinkingLevel` 保持 `minimal`，重试不加 31B。每个密钥每分钟最多 25 次，同密钥间隔在 2–3 秒间随机，每分钟 16000 Token、每个太平洋日最多 14400 次。Token 只记响应 `usageMetadata`。HTTP 500/502/503/408 立刻换下一把密钥；同一密钥连续失败才按 10 秒起翻倍退避，上限 40 秒，成功后清零。只有 429 和配额错误按供应商延迟冷却。状态码、每分钟次数、间隔上下限、退避基数和上限、最大重试次数都由环境变量配置。此处是 Connector HTTP 并发，不增加业务 Agent 或 Runtime。

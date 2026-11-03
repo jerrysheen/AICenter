@@ -5,6 +5,8 @@ import { parseContract } from '../../../../packages/contracts/src/errors.js';
 import { emptyReadingHourPayload } from '../../../../packages/contracts/src/information-tree.js';
 import { createStore } from '../../../../packages/database/src/index.js';
 import { createFeedService } from '../../../../packages/domain/src/feed-service.js';
+import { createMediaIngestionService } from '../../../../packages/domain/src/media-ingestion-service.js';
+import { createMediaConnector } from '../../../../packages/connectors/src/media/port.js';
 import { createHardwarePriceService } from '../../../../packages/domain/src/hardware-price-service.js';
 import { createInformationTreeReader } from '../../../../packages/domain/src/information-tree-service.js';
 import { createReadingHourService, readingHourSourceAccess } from '../../../../packages/domain/src/reading-hour-service.js';
@@ -51,6 +53,14 @@ function createReaders(databasePath) {
   };
   return {
     store,
+    media: workerData.mediaSettings ? createMediaIngestionService({
+      mediaRepository: store.repositories.media,
+      feedRepository: store.repositories.feed,
+      taggingRepository: store.repositories.tagging,
+      mediaPort: createMediaConnector(workerData.mediaSettings.config),
+      feedFilter: workerData.mediaSettings.strictAdmission
+        ? { config: { mode: 'enforce', rule: 'all-three-0.60' } } : null,
+    }) : null,
     feed: createFeedService({
       legacyRepository: store,
       feedRepository: store.repositories.feed,
@@ -79,6 +89,10 @@ const readers = createReaders(workerData.databasePath);
 
 async function run(task) {
   const workspace = task.workspace || 'local';
+  if (task.kind === 'media-feed' && readers.media) {
+    const feed = readers.media.readFeed(task.query || {}, { workspaceId: workspace });
+    return { status: 200, payload: { ok: true, feed, ...(task.jobId ? { jobId: task.jobId } : {}) } };
+  }
   if (task.kind === 'feed') {
     const feed = await readers.feed.getExternalFeed(task.providerId, task.query, { workspaceId: workspace });
     return { status: 200, payload: { ok: true, feed } };

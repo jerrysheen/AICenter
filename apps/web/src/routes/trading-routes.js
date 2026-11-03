@@ -33,12 +33,12 @@ export function createTradingRoutes() {
         try {
           if (services.marketBoard?.read) {
             const loaded = await services.marketBoard.read(query, { refresh });
-            json(response, 200, loaded.pending
+            await json(response, 200, loaded.pending
               ? { ok: true, market: loaded.market, pending: true }
-              : { ok: true, market: loaded.market });
+              : { ok: true, market: loaded.market }, {}, { compress: true });
             return;
           }
-          json(response, 200, { ok: true, market: await services.trading.getBoard(query) });
+          await json(response, 200, { ok: true, market: await services.trading.getBoard(query) }, {}, { compress: true });
         } catch (error) {
           json(response, 502, { ok: false, error: error instanceof Error ? error.message : '行情加载失败' });
         }
@@ -79,7 +79,7 @@ export function createTradingRoutes() {
       async handler({ response, services, url }) {
         const query = parseMarketHistoryQuery(Object.fromEntries(url.searchParams.entries()));
         try {
-          json(response, 200, { ok: true, history: await services.trading.getQuoteHistory(query) });
+          await json(response, 200, { ok: true, history: await services.trading.getQuoteHistory(query) }, {}, { compress: true });
         } catch (error) {
           json(response, error.statusCode || 502, { ok: false, error: error instanceof Error ? error.message : 'K线加载失败' });
         }

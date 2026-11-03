@@ -274,7 +274,8 @@ export function createComputePriceJobHandlers({ repository, fetch: fetchImpl = f
 async function saveParsedGpu(service, input, context, sourceKey, parserVersion, fetchRates, fetchImpl, now) {
   const value = parseContract(jobInput, input || {});
   if (!service) throw new Error('缺少算力价格存储');
-  const parsed = await fetchRates({ fetch: fetchImpl });
+  const parsed = await fetchRates({ fetch: fetchImpl, signal: context?.signal });
+  if (context?.signal?.aborted) throw context.signal.reason || new Error('GPU 报价抓取已取消');
   logFiltered(sourceKey, parsed);
   if (!parsed.rows.length) throw new Error(parsed.warnings[0] || `${sourceKey} 没有可保存的 GPU 小时价`);
   const saved = service.save(context?.job?.workspaceId || value.workspaceId, snapshot(sourceKey, now(), parsed, parserVersion));

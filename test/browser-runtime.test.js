@@ -114,7 +114,9 @@ test('BrowserSkill navigate passes a timeout and optional wait condition', async
   assert.ok(commands[0].args.includes('45000ms'));
   assert.ok(commands[0].args.includes('--wait-until'));
   assert.ok(commands[0].args.includes('domcontentloaded'));
-  assert.equal(commands[0].timeoutMs, 65_000);
+  // The shared wall-clock budget may already have spent a few milliseconds
+  // before spawning the first command, but must leave navigation's IPC margin.
+  assert.ok(commands[0].timeoutMs > 45_000 && commands[0].timeoutMs <= 65_000);
 });
 
 test('browser process abort settles without waiting for close', async () => {

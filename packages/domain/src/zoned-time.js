@@ -3,7 +3,10 @@ function readPart(parts, type) {
   return Number.isFinite(value) ? value : 0;
 }
 
-export function zonedParts(utcMs, timeZone) {
+const formatters = new Map();
+
+function zonedFormatter(timeZone) {
+  if (typeof timeZone === 'string' && formatters.has(timeZone)) return formatters.get(timeZone);
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone,
     year: 'numeric',
@@ -14,6 +17,15 @@ export function zonedParts(utcMs, timeZone) {
     second: '2-digit',
     hourCycle: 'h23',
   });
+  if (typeof timeZone === 'string') {
+    if (formatters.size >= 32) formatters.delete(formatters.keys().next().value);
+    formatters.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
+export function zonedParts(utcMs, timeZone) {
+  const formatter = zonedFormatter(timeZone);
   const parts = formatter.formatToParts(new Date(utcMs));
   let hour = readPart(parts, 'hour');
   if (hour === 24) hour = 0;
@@ -46,7 +58,7 @@ export function addCalendarDays(year, month, day, days) {
 
 export function assertTimeZone(timeZone) {
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone }).format(0);
+    zonedFormatter(timeZone).format(0);
   } catch {
     throw new Error(`无法识别时区 ${timeZone}`);
   }

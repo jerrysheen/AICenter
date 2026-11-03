@@ -374,6 +374,7 @@ export function createMediaRepository(database, emitEvent = () => {}) {
       limit = 50,
       before = null,
       excludedExternalIds = [],
+      approvedExternalIds = null,
       extractorVersion = '',
     } = {}) {
       const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 101));
@@ -410,8 +411,10 @@ export function createMediaRepository(database, emitEvent = () => {}) {
         AND (?='' OR e.channel=?)
         AND (?='' OR e.source_key=? OR e.publisher_key=?)
         AND ${hiddenSql}=0
-        AND e.external_id NOT IN (SELECT value FROM json_each(?))`;
-      const filterParams = [workspaceId, channel, channel, sourceKey, sourceKey, sourceKey, JSON.stringify(excludedExternalIds || [])];
+        AND e.external_id NOT IN (SELECT value FROM json_each(?))
+        ${approvedExternalIds === null ? '' : 'AND e.external_id IN (SELECT value FROM json_each(?))'}`;
+      const filterParams = [workspaceId, channel, channel, sourceKey, sourceKey, sourceKey, JSON.stringify(excludedExternalIds || []),
+        ...(approvedExternalIds === null ? [] : [JSON.stringify(approvedExternalIds)])];
       const columns = ENTRY_INDEX_COLUMNS.split(',').map((name) => `e.${name.trim()} AS ${name.trim()}`).join(',');
       const counted = database.prepare(`SELECT category, COUNT(*) AS n FROM (
           SELECT ${categorySql} AS category

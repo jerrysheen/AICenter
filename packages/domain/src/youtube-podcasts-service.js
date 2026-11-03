@@ -69,6 +69,7 @@ function articleJobsLive(store, now) {
 }
 
 function articleView(row, now, env, store, jobsLive = null) {
+  if (row.articleStatus === 'ready') return describeYoutubeArticle({ articleStatus: 'ready' });
   const facts = articleFacts(row);
   const clock = youtubePodcastClock(env);
   const today = formatYmd(zonedParts(now, clock.timeZone));

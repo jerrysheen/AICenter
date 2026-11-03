@@ -1685,13 +1685,15 @@ export function createFeedRepository(database, emitEvent) {
     },
 
     listContentItemBriefs(workspaceId, ids = []) {
+      // These are identity lookups. A large IN list otherwise makes SQLite
+      // choose the workspace index and visit the whole feed for a few sources.
       const wanted = [...new Set((ids || []).map((id) => String(id || '').trim()).filter(Boolean))];
       const rows = [];
       for (let offset = 0; offset < wanted.length; offset += 400) {
         const slice = wanted.slice(offset, offset + 400);
         rows.push(...database.prepare(`SELECT ci.id, ci.title, ci.source_url, ci.published_at,
             ci.author_name AS author_name, ia.author_id AS author_id
-          FROM content_items ci
+          FROM content_items ci INDEXED BY sqlite_autoindex_content_items_1
           LEFT JOIN item_authors ia ON ia.workspace_id = ci.workspace_id AND ia.content_item_id = ci.id
           WHERE ci.workspace_id = ? AND ci.id IN (${slice.map(() => '?').join(',')})`).all(workspaceId, ...slice));
       }
@@ -1711,7 +1713,7 @@ export function createFeedRepository(database, emitEvent) {
       for (let offset = 0; offset < wanted.length; offset += 400) {
         const slice = wanted.slice(offset, offset + 400);
         rows.push(...database.prepare(`SELECT ci.id AS id, ci.author_name AS author_name, c.provider AS provider, sa.display_name AS display_name
-          FROM content_items ci
+          FROM content_items ci INDEXED BY sqlite_autoindex_content_items_1
           LEFT JOIN captures c ON c.id = ci.capture_id
           LEFT JOIN source_accounts sa ON sa.id = c.source_account_id
           WHERE ci.workspace_id = ? AND ci.id IN (${slice.map(() => '?').join(',')})`).all(workspaceId, ...slice));
