@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { LOADING_QUOTE, overviewLoadingIndices } from '../apps/web/public/mock.js';
 
@@ -56,4 +57,21 @@ test('overview ticker renders the loading mark without a fetched-at footnote', (
   assert.match(timeline, /行情暂不可用 · 重试/);
   assert.match(timeline, /读取较慢 · 重试/);
   assert.doesNotMatch(functionSource(timeline, 'quoteStatusText'), /更新于 /);
+});
+
+test('overview ticker shows index prices to two decimals so phone columns stay apart', () => {
+  const app = readFileSync(new URL('../apps/web/public/app.js', import.meta.url), 'utf8');
+  const context = vm.createContext({});
+  vm.runInContext(`${functionSource(app, 'formatPrice')}\n${functionSource(app, 'formatStripPrice')}`, context);
+  assert.equal(context.formatStripPrice(2768.2732), '2768.27');
+  assert.equal(context.formatStripPrice(2402.8855), '2402.89');
+  assert.equal(context.formatStripPrice(1151.2826), '1151.28');
+  assert.equal(context.formatStripPrice(23525.97), '23525.97');
+  assert.equal(context.formatStripPrice('23525.9700'), '23525.97');
+  assert.equal(context.formatStripPrice(null), '—');
+  assert.equal(context.formatStripPrice(''), '—');
+  assert.equal(context.formatPrice('2768.2732'), '2768.2732');
+  const ticker = functionSource(app, 'renderHubTicker');
+  assert.match(ticker, /formatStripPrice\(item\.lastPrice\)/);
+  assert.doesNotMatch(ticker, /formatPrice\(item\.lastPrice\)/);
 });
