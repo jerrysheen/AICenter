@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-11-04-overview-quote-spacing.md`：总览行情条的指数现价固定两位小数。393 宽的上证50、创业板50、科创50、恒生指数不再贴成一串。股票页仍保留来源小数。不新增 migration。需要重启 Web。
+
 - `progress/2026-11-02-hourly-today-entry.md`：停在昨天时，期数菜单和「下一期」能进今天最新有内容的小时。总览「小时报 → 更多」打开正在看的那一小时，同一钟点优先今天。不新增 migration。需要重启 Web。
 
 - `progress/2026-10-31-article-back-reload.md`：从小时报打开原文后整页重载，站内返回仍回到 `#report?hour=N`，按钮保持「返回简报」。没有来源时文案和去向都是信息流。不新增 migration。需要重启 Web。
