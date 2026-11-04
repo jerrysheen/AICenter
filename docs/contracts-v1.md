@@ -203,7 +203,7 @@ V6 保留旧 REAL 列用于兼容，新增 `*_decimal` 列作为新代码的权�
 未声明任务、重复任务 handler 和不符合命名规则的模块会在注册阶段被拒绝。
 ## X 点赞试用契约（2026-10-07）
 
-`feed-interaction.js` 声明固定 `feed.x.like`、严格 ContentItem ID 入参、`confirmed:true` HTTP 命令与脱敏结果。结果区分 `liked` / `already-liked` / `login-required` / `blocked` / `unavailable` / `not-found` / `unconfirmed`；账号仅返回 handle，不输出登录态或 BrowserRuntime 信息。接口与兼容边界见 `feed-interaction-v1.md`。
+`feed-interaction.js` 声明固定 `feed.x.like`、严格 ContentItem ID 入参、`confirmed:true` HTTP 命令与脱敏结果。结果区分 `liked` / `already-liked` / `login-required` / `blocked` / `unavailable` / `not-found` / `unconfirmed`；账号仅返回 handle，不输出登录态或 BrowserRuntime 信息。2026-11-04 起点赞结果可带可选封闭 `reason`：`account-not-ready` / `button-unavailable` / `page-changed` / `browser-timeout` / `browser-not-ready` / `browser-unavailable` / `browser-error`。没有此字段的历史结果兼容，不接受任意异常文本。接口与兼容边界见 `feed-interaction-v1.md`。
 
 
 文章整理隔离协议 `article-normalize-v1`：模型返回 title/tagId/summary/body 或 needs_content。信息节点仅以 text 保存摘要，新增可选 body 和 formatVersion；新格式无 body 校验失败。旧短稿读取不回填正文。小时/日报沿用原短文 Schema，输入投影排除 body。详见 `article-normalize-pilot.md`。

@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-11-04-x-like-recovery.md`：X 点赞使用稳定账号区域作页面变动依赖；只读检查有限恢复，点击不重复，失败原因脱敏区分。挂起恢复前验证账号与真实持久点赞。不新增 migration。
+
 - `progress/2026-11-03-api-responsiveness.md`：媒体列表移入现有后台读取线程并避免整池物化；小时报来源查询使用主键，复用时区格式化器，股票/K 线/播客协商 gzip。GPU 抓取增加独立截止。接口实测及全仓检查限制见记录。不新增 migration，需要重载 Web/Worker。
 
 - `progress/2026-11-03-browser-and-quotes-recovery.md`：X 媒体变动保留已读帖、按观察 ID 翻过旧帖；BrowserSkill 重试共用总时限，雪球/Yahoo 超时覆盖正文。Worker 让出事件循环，YouTube 翻译判断改为索引精确查询，避免启动扫描拖住采集和行情。专项 178/178；全仓检查仍有失败，详见记录。需要重载 Web/Worker。

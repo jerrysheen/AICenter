@@ -300,7 +300,10 @@ test('BrowserSkill total deadline aborts a stuck resync and allows the next comm
   assert.equal(await client.evaluate('SESS', 'read()'), 7);
 });
 
-test('BrowserSkill narrows the cooperate guard and drops a missing selector once', async () => {
+for (const missing of [
+  { code: 'selector_not_found', message: 'selector did not match any element' },
+  { code: 'not_found', message: 'selector a[data-testid="AppTabBar_Profile_Link"] did not match any element' },
+]) test(`BrowserSkill drops a missing selector once (${missing.code})`, async () => {
   const commands = [];
   let evaluates = 0;
   const client = createBrowserSkillClient({
@@ -311,7 +314,7 @@ test('BrowserSkill narrows the cooperate guard and drops a missing selector once
         if (evaluates === 1) {
           return {
             code: 1,
-            stdout: JSON.stringify({ code: 'selector_not_found', message: 'selector did not match any element' }),
+            stdout: JSON.stringify(missing),
             stderr: '',
           };
         }

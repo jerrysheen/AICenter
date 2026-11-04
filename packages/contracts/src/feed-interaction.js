@@ -17,6 +17,7 @@ export const LikeResultSchema = z.object({
   status: z.enum(['liked', 'already-liked', 'login-required', 'blocked', 'unavailable', 'not-found', 'unconfirmed']),
   accountHandle: z.string().max(32).default(''),
   checkedAt: z.number().int().nonnegative(),
+  reason: z.enum(['account-not-ready', 'button-unavailable', 'page-changed', 'browser-timeout', 'browser-not-ready', 'browser-unavailable', 'browser-error']).optional(),
 }).strict();
 export const UnlikeContentInputSchema = z.object({ contentItemId: z.string().uuid() }).strict();
 export const UnlikeRequestSchema = z.object({ confirmed: z.literal(true) }).strict();

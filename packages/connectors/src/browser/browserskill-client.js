@@ -248,7 +248,7 @@ export function createBrowserSkillClient(options = {}) {
     const code = String(error?.details?.code || '');
     return code === 'selector_not_found'
       || code === 'selector_missing'
-      || /selector did not match|selector_not_found|selector_missing/i.test(message);
+      || /selector(?:\s+[^\r\n]+?)?\s+did not match|selector_not_found|selector_missing/i.test(message);
   }
 
   function listedDepends(dependsOn) {

@@ -3,14 +3,14 @@ import { LikeResultSchema, NotInterestedResultSchema, UnlikeResultSchema } from 
 // This runs only in a dedicated BrowserRuntime tab. Never select a reply or a
 // quoted Post by its position, and never click "unlike" on a repeated request.
 function inspectPost(postId, click, expectedAccount) {
-  const result = status => ({ status, accountHandle, checkedAt: Date.now() });
+  const result = (status, reason) => ({ status, accountHandle, checkedAt: Date.now(), ...(reason ? { reason } : {}) });
   let accountHandle = '';
   if (location.origin !== 'https://x.com' || !new RegExp(`/status/${postId}(?:/|$)`).test(location.pathname)) return result('blocked');
   if (document.querySelector('[data-testid="login"], a[href="/login"], a[href*="/i/flow/login"]')) return result('login-required');
   const profile = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
   const handle = profile?.getAttribute('href')?.match(/^\/([A-Za-z0-9_]{1,15})$/)?.[1];
-  if (!handle || !document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')) return result('unavailable');
-  accountHandle = handle;
+  accountHandle = handle || '';
+  if (!handle || !document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')) return result('unavailable', 'account-not-ready');
   if (expectedAccount && accountHandle !== expectedAccount) return result('blocked');
   if ([...document.querySelectorAll('[role="dialog"]')].some(node => node.getClientRects().length)) return result('blocked');
   const primaryId = article => {
@@ -23,7 +23,7 @@ function inspectPost(postId, click, expectedAccount) {
   const unlike = article.querySelectorAll('button[data-testid="unlike"]');
   if (unlike.length === 1) return result('already-liked');
   const buttons = article.querySelectorAll('button[data-testid="like"]');
-  if (buttons.length !== 1 || buttons[0].disabled || buttons[0].getAttribute('aria-disabled') === 'true') return result('unavailable');
+  if (buttons.length !== 1 || buttons[0].disabled || buttons[0].getAttribute('aria-disabled') === 'true') return result('unavailable', 'button-unavailable');
   if (click) buttons[0].click();
   return result('unconfirmed');
 }
@@ -132,6 +132,15 @@ function publishNotInterested(state) {
   });
 }
 
+function likeBrowserFailure(error) {
+  const message = String(error?.message || '');
+  if (/could not establish connection\. receiving end does not exist|previous operation is still settling; this action was not dispatched/i.test(message)) return 'browser-not-ready';
+  if (/observed content changed|observed page or control state changed|media source changed|synchronize and replan|cooperation_sync_required/i.test(message)) return 'page-changed';
+  if (error?.details?.kind === 'timeout' || /timed out|timeout/i.test(message)) return 'browser-timeout';
+  if (['no_browser_connected', 'daemon_unavailable'].includes(error?.details?.code)) return 'browser-unavailable';
+  return 'browser-error';
+}
+
 export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   if (!browserRuntime?.withSession) throw new Error('X 点赞需要 BrowserRuntime');
   async function run(postId, mutate) {
@@ -139,9 +148,24 @@ export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promi
     // Validate before allocating a tab, even for internally generated calls.
     buildXLikeExpression(postId);
     let attempted = false;
+    let accountHandle = '';
     try {
       return await browserRuntime.withSession({ purpose: 'x.like', focused: false }, async session => {
-        const read = async () => LikeResultSchema.parse(await session.evaluate(buildXLikeExpression(postId), { timeoutMs: 10_000 }));
+        // Only the stable account shell guards the command. The expression
+        // checks account, permalink and exact original-post identity atomically.
+        const evaluateOptions = { timeoutMs: 30_000, dependsOn: ['a[data-testid="AppTabBar_Profile_Link"]'] };
+        const read = async () => {
+          for (let recovery = 0; ; recovery++) {
+            try {
+              const state = LikeResultSchema.parse(await session.evaluate(buildXLikeExpression(postId), evaluateOptions));
+              if (state.accountHandle) accountHandle = state.accountHandle;
+              return state;
+            } catch (error) {
+              if (!['page-changed', 'browser-timeout', 'browser-not-ready'].includes(likeBrowserFailure(error)) || recovery >= 2) throw error;
+              await delay((recovery + 1) * 1000);
+            }
+          }
+        };
         const load = async () => {
           await session.navigate(url, { timeoutMs: 45_000, waitUntil: 'domcontentloaded' });
           let state;
@@ -155,7 +179,7 @@ export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promi
         const before = await load();
         if (!mutate || before.status !== 'unconfirmed') return before;
         attempted = true;
-        const clicked = LikeResultSchema.parse(await session.evaluate(buildXLikeExpression(postId, { click: true, expectedAccount: before.accountHandle }), { timeoutMs: 10_000 }));
+        const clicked = LikeResultSchema.parse(await session.evaluate(buildXLikeExpression(postId, { click: true, expectedAccount: before.accountHandle }), evaluateOptions));
         if (clicked.status !== 'unconfirmed') return clicked;
         for (let i = 0; i < 16; i++) {
           await delay(500);
@@ -172,9 +196,9 @@ export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promi
         }
         return { status: 'unconfirmed', accountHandle: before.accountHandle, checkedAt: Date.now() };
       });
-    } catch {
+    } catch (error) {
       // Browser exceptions can contain command text, browser IDs or URLs.
-      return { status: attempted ? 'unconfirmed' : 'unavailable', accountHandle: '', checkedAt: Date.now() };
+      return { status: attempted ? 'unconfirmed' : 'unavailable', accountHandle, checkedAt: Date.now(), reason: likeBrowserFailure(error) };
     }
   }
   async function unlike(postId) {

@@ -305,7 +305,16 @@ export function nextAutoLikeSettings(settings, status, reason = '') {
   if (status === 'unavailable') {
     const consecutiveUnavailable = current.consecutiveUnavailable + 1;
     if (consecutiveUnavailable >= 3) {
-      return { ...current, pageEnabled: false, suspended: true, notice: '连续三次无法操作点赞按钮，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable };
+      const detail = {
+        'account-not-ready': 'X 账号页面尚未就绪',
+        'button-unavailable': '原帖点赞按钮不可用',
+        'page-changed': 'X 页面持续变化',
+        'browser-timeout': '浏览器操作超时',
+        'browser-not-ready': '采集浏览器连接尚未就绪',
+        'browser-unavailable': '采集浏览器未连接',
+        'browser-error': '浏览器操作失败',
+      }[reason];
+      return { ...current, pageEnabled: false, suspended: true, notice: detail ? `连续三次${detail}，已停止自动点赞` : '连续三次无法操作点赞按钮，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable };
     }
     return { ...current, consecutiveUnavailable };
   }
