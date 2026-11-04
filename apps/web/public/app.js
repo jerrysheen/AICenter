@@ -7051,6 +7051,18 @@ function formatPrice(value, digits = 2) {
   });
 }
 
+// 总览四列指数在 393 宽里放不下四位小数，价格会贴成一串。这里只给行情条用两位。
+function formatStripPrice(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  const number = Number(String(value).replace(/,/g, '').trim());
+  if (!Number.isFinite(number)) return '—';
+  return number.toLocaleString('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    useGrouping: false,
+  });
+}
+
 function formatAssetPrice(item) {
   return formatQuoteNumber(item, item.lastPrice);
 }
@@ -7382,7 +7394,7 @@ function renderHubTicker() {
     name.textContent = item.name || item.symbol || '';
     const price = document.createElement('strong');
     price.className = `num ${tone}`.trim();
-    price.textContent = item.lastPrice == null ? LOADING_QUOTE : formatPrice(item.lastPrice);
+    price.textContent = item.lastPrice == null ? LOADING_QUOTE : formatStripPrice(item.lastPrice);
     const change = document.createElement('b');
     change.className = tone;
     change.textContent = known ? formatPct(up, item.changePct) : LOADING_QUOTE;
