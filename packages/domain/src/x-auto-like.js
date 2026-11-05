@@ -173,6 +173,11 @@ export function createXFocusService({
     return text(error) || '任务出错';
   }
 
+  function logOrdinaryFailure(label, status, reason, settings) {
+    if (status !== 'unconfirmed' && status !== 'unavailable' && status !== 'failed') return;
+    log(`[worker] ${label} failure status=${status} reason=${text(reason) || '-'} unconfirmed=${settings.consecutiveUnconfirmed} unavailable=${settings.consecutiveUnavailable} failed=${settings.consecutiveTaskErrors}`);
+  }
+
   function failedAutoLikes(workspaceId, at) {
     return likeJobs(workspaceId, at - 30 * DAY_MS).filter((job) => job?.input?.source === 'auto' && job.status === 'failed' && job.id);
   }
@@ -192,17 +197,13 @@ export function createXFocusService({
     const noted = new Set(settings.notedFailureIds);
     let current = settings;
     let changed = false;
-    let announced = false;
     for (const job of failed) {
       if (noted.has(job.id)) continue;
       const reason = jobFailureReason(job);
       current = nextAutoLikeSettings(current, 'failed', reason);
       noted.add(job.id);
       changed = true;
-      if (!announced && current.suspended && !settings.suspended) {
-        announced = true;
-        log(`[worker] x-auto-like stopped status=failed reason=${reason}`);
-      }
+      logOrdinaryFailure('x-auto-like', 'failed', reason, current);
     }
     if (!changed) return;
     writeSettings(workspaceId, {
@@ -232,7 +233,6 @@ export function createXFocusService({
     const noted = new Set(settings.notedFailureIds);
     let current = settings;
     let changed = false;
-    let announced = false;
     for (const job of failed) {
       if (noted.has(job.id)) continue;
       const reason = jobFailureReason(job);
@@ -240,10 +240,7 @@ export function createXFocusService({
       noted.add(job.id);
       changed = true;
       if (tweetOf(job)) feedRepository?.updateNotInterestedStatus?.(workspaceId, tweetOf(job), 'failed');
-      if (!announced && current.suspended && !settings.suspended) {
-        announced = true;
-        log(`[worker] x-not-interested stopped status=failed reason=${reason}`);
-      }
+      logOrdinaryFailure('x-not-interested', 'failed', reason, current);
     }
     if (!changed) return;
     writeHideSettings(workspaceId, {
@@ -302,8 +299,9 @@ export function createXFocusService({
       }
       if (next !== settings) writeSettings(workspaceId, next);
       dropView(workspaceId);
+      logOrdinaryFailure('x-auto-like', output?.status, output?.reason, next);
       if (next.suspended && !settings.suspended) {
-        log(`[worker] x-auto-like stopped status=${output?.status || ''} reason=${text(output?.reason)}`);
+        log(`[worker] x-auto-like stopped status=${output?.status || ''} reason=${text(output?.reason) || '-'}`);
       }
       return next;
     },
@@ -323,8 +321,9 @@ export function createXFocusService({
       }
       if (next !== settings) writeHideSettings(workspaceId, next);
       dropView(workspaceId);
+      logOrdinaryFailure('x-not-interested', output?.status, output?.reason, next);
       if (next.suspended && !settings.suspended) {
-        log(`[worker] x-not-interested stopped status=${output?.status || ''} reason=${text(output?.reason)}`);
+        log(`[worker] x-not-interested stopped status=${output?.status || ''} reason=${text(output?.reason) || '-'}`);
       }
       return next;
     },
