@@ -1,4 +1,4 @@
-﻿# AI Center 文档索引
+# AI Center 文档索引
 
 - `progress/2026-10-07-gemma-five-accounts.md`：五账号原文翻译、跨模型每账号 10 秒节流、Worker 五并发及本地无日上限。
 
@@ -25,11 +25,14 @@
 
 ## 当前
 
+- `progress/2026-11-05-x-auto-like-no-suspend.md`：自动点赞符合条件就继续点。未确认、暂时点不到、任务失败只累计并写日志，不再关掉页面开关。登录失效和页面验证仍会停。不感兴趣同样处理。不新增 migration。需要同时重启 Web 和 Worker。
+
 - `progress/2026-11-04-x-like-recovery.md`：X 点赞使用稳定账号区域作页面变动依赖；只读检查有限恢复，点击不重复，失败原因脱敏区分。挂起恢复前验证账号与真实持久点赞。不新增 migration。
 
 - `progress/2026-11-03-api-responsiveness.md`：媒体列表移入现有后台读取线程并避免整池物化；小时报来源查询使用主键，复用时区格式化器，股票/K 线/播客协商 gzip。GPU 抓取增加独立截止。接口实测及全仓检查限制见记录。不新增 migration，需要重载 Web/Worker。
 
 - `progress/2026-11-03-browser-and-quotes-recovery.md`：X 媒体变动保留已读帖、按观察 ID 翻过旧帖；BrowserSkill 重试共用总时限，雪球/Yahoo 超时覆盖正文。Worker 让出事件循环，YouTube 翻译判断改为索引精确查询，避免启动扫描拖住采集和行情。专项 178/178；全仓检查仍有失败，详见记录。需要重载 Web/Worker。
+
 - `progress/2026-11-04-overview-quote-spacing.md`：总览行情条的指数现价固定两位小数。393 宽的上证50、创业板50、科创50、恒生指数不再贴成一串。股票页仍保留来源小数。不新增 migration。需要重启 Web。
 
 - `progress/2026-11-02-hourly-today-entry.md`：停在昨天时，期数菜单和「下一期」能进今天最新有内容的小时。总览「小时报 → 更多」打开正在看的那一小时，同一钟点优先今天。不新增 migration。需要重启 Web。
@@ -249,7 +252,7 @@
 
 - `progress/2026-10-19-bamboo-startlux.md`：Bamboo StartLux 作为可选分类 provider。默认仍是 TypeSafe。`AI_CENTER_JEV_ENABLED` 不变。设 `AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 后，信息流准入和小时报选题改走 Bamboo；问答先验和证据门默认 shadow。质量刷新默认不调 Bamboo，要设 `AI_CENTER_BAMBOO_REFRESH=1`。信息流准入每日上限 7000，只计准入。计数写在 `data/bamboo-usage-YYYYMMDD.json`，Web 和 Worker 共用，重启不清零。触达上限后当天其余走本地兜底。默认先到先得，可选按小时均分。目前免费。不新增 migration。需要同时重启 Web 和 Worker。真实对照在服务器上跑，仓库里没有密钥。
 
-- `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。没有分类客户端时点赞门槛 0.9。`AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 时按有分类客户端处理，不抬到 0.9。`filterReason` 以 `fallback-` 或 `jev-disabled-` 开头的兜底 KEEP 不点赞。默认每天 8 次、每小时 2 次、间隔 15 分钟。任务连续失败 2 次自动停。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。
+- `progress/2026-10-19-x-auto-like-tight.md`：自动点赞选条排除广告词、官号宣传和短帖。新增推广词只用于点赞。企业动态至少 0.9 才点。没有分类客户端时点赞门槛 0.9。`AI_CENTER_CLASSIFICATION_PROVIDER=bamboo` 时按有分类客户端处理，不抬到 0.9。`filterReason` 以 `fallback-` 或 `jev-disabled-` 开头的兜底 KEEP 不点赞。默认每天 8 次、每小时 2 次、间隔 15 分钟。当时任务连续失败 2 次会自动停；2026-11-05 起这类失败不再挂起，见 `progress/2026-11-05-x-auto-like-no-suspend.md`。配置版本 `x-focus-2`，趋势图仍接受 `x-focus-1`。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-10-19-quote-card-align.md`：股票页涨跌和标题跟总览卡片对齐。没有现价时走 `GET /api/v1/markets/quote`，10 秒超时返回 504。午间休市保持 `break`。总览数据没变不重绘，键盘焦点按代码恢复。名字先目录、再实时、再本进程记下的 A 股名字，最多 2000 条。不新增 migration。需要同时重启 Web 和 Worker，浏览器再加载一次。
 

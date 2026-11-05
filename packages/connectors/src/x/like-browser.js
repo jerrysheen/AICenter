@@ -121,6 +121,18 @@ export function buildXNotInterestedExpression(postId, mode = 'read', expectedAcc
   return `(${inspectNotInterested.toString()})(${JSON.stringify(String(postId))}, ${JSON.stringify(mode)}, ${JSON.stringify(String(expectedAccount || ''))})`;
 }
 
+function likeFailureKind(error) {
+  const kind = String(error?.details?.kind || '');
+  if (kind === 'timeout' || /timed out/i.test(String(error?.message || ''))) return 'timeout';
+  if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') return 'aborted';
+  if (['evaluate', 'spawn', 'exit', 'invalid_json', 'invalid_params', 'argument_too_long', 'empty'].includes(kind)) return kind;
+  return 'browser-error';
+}
+
+function reportUnresolved(log, action, postId, status, kind) {
+  log(`[worker] x-${action} unresolved tweet=${postId} status=${status} kind=${kind}`);
+}
+
 function publishNotInterested(state) {
   const status = ['done', 'already', 'login-required', 'blocked', 'unavailable', 'not-found', 'unconfirmed'].includes(state?.status)
     ? state.status
@@ -141,7 +153,11 @@ function likeBrowserFailure(error) {
   return 'browser-error';
 }
 
-export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+export function createXLikeBrowserPort({
+  browserRuntime,
+  delay = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  log = (line) => { console.log(line); },
+} = {}) {
   if (!browserRuntime?.withSession) throw new Error('X 点赞需要 BrowserRuntime');
   async function run(postId, mutate) {
     const url = `https://x.com/i/web/status/${postId}`;
@@ -184,21 +200,30 @@ export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promi
         for (let i = 0; i < 16; i++) {
           await delay(500);
           const state = await read();
-          if (state.accountHandle !== before.accountHandle) return { status: 'unconfirmed', accountHandle: '', checkedAt: Date.now() };
+          if (state.accountHandle !== before.accountHandle) {
+            reportUnresolved(log, 'like', postId, 'unconfirmed', 'account-changed');
+            return { status: 'unconfirmed', accountHandle: '', checkedAt: Date.now() };
+          }
           if (state.status === 'already-liked') {
             // X updates the heart optimistically. Reopen the permalink and
             // verify persisted state before reporting a successful write.
             await delay(1500);
             const verified = await load();
-            return LikeResultSchema.parse({ ...verified, status: verified.status === 'already-liked' && verified.accountHandle === before.accountHandle ? 'liked' : 'unconfirmed' });
+            const confirmed = verified.status === 'already-liked' && verified.accountHandle === before.accountHandle;
+            if (!confirmed) reportUnresolved(log, 'like', postId, 'unconfirmed', 'verify-miss');
+            return LikeResultSchema.parse({ ...verified, status: confirmed ? 'liked' : 'unconfirmed' });
           }
           if (['login-required', 'blocked'].includes(state.status)) return state;
         }
+        reportUnresolved(log, 'like', postId, 'unconfirmed', 'confirm-timeout');
         return { status: 'unconfirmed', accountHandle: before.accountHandle, checkedAt: Date.now() };
       });
     } catch (error) {
       // Browser exceptions can contain command text, browser IDs or URLs.
-      return { status: attempted ? 'unconfirmed' : 'unavailable', accountHandle, checkedAt: Date.now(), reason: likeBrowserFailure(error) };
+      const status = attempted ? 'unconfirmed' : 'unavailable';
+      // Log only a fixed kind, never the message.
+      reportUnresolved(log, 'like', postId, status, likeFailureKind(error));
+      return { status, accountHandle, checkedAt: Date.now(), reason: likeBrowserFailure(error) };
     }
   }
   async function unlike(postId) {
@@ -286,10 +311,13 @@ export function createXLikeBrowserPort({ browserRuntime, delay = ms => new Promi
           if (state.status === 'done') return publishNotInterested({ ...state, accountHandle: account });
           if (['login-required', 'blocked'].includes(state.status)) return publishNotInterested(state);
         }
+        reportUnresolved(log, 'not-interested', postId, 'unconfirmed', 'confirm-timeout');
         return publishNotInterested({ status: 'unconfirmed', accountHandle: account, checkedAt: Date.now() });
       });
-    } catch {
-      return publishNotInterested({ status: attempted ? 'unconfirmed' : 'unavailable', accountHandle: '', checkedAt: Date.now() });
+    } catch (error) {
+      const status = attempted ? 'unconfirmed' : 'unavailable';
+      reportUnresolved(log, 'not-interested', postId, status, likeFailureKind(error));
+      return publishNotInterested({ status, accountHandle: '', checkedAt: Date.now() });
     }
   }
   return Object.freeze({ probe: postId => run(postId, false), like: postId => run(postId, true), unlike, notInterested });

@@ -180,13 +180,29 @@ test('not interested stays off until both switches are on, then hides promos and
   assert.equal(streak.trigger, 'streak');
   state.now += 1_000;
   assert.equal((await service.dispatchNotInterested('local')).reason, 'limit');
-  const stopped = nextNotInterestedSettings(
+  const repeated = nextNotInterestedSettings(
     nextNotInterestedSettings({ pageEnabled: true }, 'unconfirmed'),
     'unconfirmed',
   );
-  assert.equal(stopped.pageEnabled, false);
-  assert.match(stopped.notice, /连续两次/);
-  assert.match(nextNotInterestedSettings({ pageEnabled: true }, 'login-required').notice, /重新登录/);
+  assert.equal(repeated.pageEnabled, true);
+  assert.equal(repeated.suspended, false);
+  assert.equal(repeated.consecutiveUnconfirmed, 2);
+  assert.equal(repeated.notice, '');
+  assert.equal(nextNotInterestedSettings(repeated, 'done').consecutiveUnconfirmed, 0);
+  const unavailable = [0, 1, 2].reduce((settings) => nextNotInterestedSettings(settings, 'unavailable'), { pageEnabled: true });
+  assert.equal(unavailable.pageEnabled, true);
+  assert.equal(unavailable.suspended, false);
+  assert.equal(unavailable.consecutiveUnavailable, 3);
+  const failed = nextNotInterestedSettings(nextNotInterestedSettings({ pageEnabled: true }, 'failed', '任务出错'), 'failed', '任务出错');
+  assert.equal(failed.pageEnabled, true);
+  assert.equal(failed.suspended, false);
+  assert.equal(failed.consecutiveTaskErrors, 2);
+  assert.equal(nextNotInterestedSettings(failed, 'already').consecutiveTaskErrors, 0);
+  const login = nextNotInterestedSettings({ pageEnabled: true }, 'login-required');
+  assert.equal(login.suspended, true);
+  assert.equal(login.pageEnabled, false);
+  assert.match(login.notice, /重新登录/);
+  assert.equal(nextNotInterestedSettings({ pageEnabled: true }, 'blocked').suspended, true);
 });
 
 test('scored captures in the last day are selectable and a promo can be marked', async () => {

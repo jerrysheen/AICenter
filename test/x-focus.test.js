@@ -434,6 +434,7 @@ function autoService(env, state, calls) {
       state.jobs.push({ type: X_LIKE_JOB_TYPE, createdAt: state.now, input, status: 'queued' });
       return { id: 'like-job' };
     },
+    log: typeof state.log === 'function' ? state.log : () => {},
   });
 }
 
@@ -546,20 +547,43 @@ test('auto like keeps the highest kept card and respects switches, limits and du
   assert.equal((await service.dispatch('local')).dispatched, false);
 });
 
-test('login wall, block and two unconfirmed likes stop auto like', () => {
-  const current = { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 };
+test('login wall and block stop auto like; ordinary misses do not', async () => {
+  const current = { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
   const once = nextAutoLikeSettings(current, 'unconfirmed');
   assert.equal(once.suspended, false);
+  assert.equal(once.pageEnabled, true);
   assert.equal(once.consecutiveUnconfirmed, 1);
-  const stopped = nextAutoLikeSettings(once, 'unconfirmed');
-  assert.equal(stopped.suspended, true);
-  assert.match(stopped.notice, /连续两次/);
-  assert.equal(nextAutoLikeSettings(stopped, 'liked').pageEnabled, false);
-  const cleared = nextAutoLikeSettings(once, 'liked');
+  let streak = once;
+  for (let index = 0; index < 8; index += 1) streak = nextAutoLikeSettings(streak, 'unconfirmed');
+  assert.equal(streak.consecutiveUnconfirmed, 9);
+  assert.equal(streak.suspended, false);
+  assert.equal(streak.pageEnabled, true);
+  assert.equal(nextAutoLikeSettings(streak, 'unconfirmed').consecutiveUnconfirmed, 9);
+  const unavailable = nextAutoLikeSettings(nextAutoLikeSettings(nextAutoLikeSettings(current, 'unavailable'), 'unavailable'), 'unavailable');
+  assert.equal(unavailable.consecutiveUnavailable, 3);
+  assert.equal(unavailable.suspended, false);
+  assert.equal(unavailable.pageEnabled, true);
+  const failed = nextAutoLikeSettings(nextAutoLikeSettings(current, 'failed', '任务运行超过时限'), 'failed', '任务运行超过时限');
+  assert.equal(failed.consecutiveTaskErrors, 2);
+  assert.equal(failed.suspended, false);
+  assert.equal(failed.pageEnabled, true);
+  assert.equal(failed.notice, '');
+  const cleared = nextAutoLikeSettings(streak, 'liked');
   assert.equal(cleared.consecutiveUnconfirmed, 0);
-  assert.match(nextAutoLikeSettings(current, 'login-required').notice, /重新登录/);
-  assert.match(nextAutoLikeSettings(current, 'blocked').notice, /被拦截/);
+  assert.equal(cleared.suspended, false);
+  assert.equal(cleared.pageEnabled, true);
+  assert.equal(nextAutoLikeSettings(unavailable, 'already-liked').consecutiveUnavailable, 0);
+  const login = nextAutoLikeSettings(current, 'login-required');
+  assert.equal(login.suspended, true);
+  assert.equal(login.pageEnabled, false);
+  assert.match(login.notice, /重新登录/);
+  assert.equal(nextAutoLikeSettings(login, 'liked').pageEnabled, false);
+  assert.equal(nextAutoLikeSettings(login, 'liked').suspended, true);
+  const blocked = nextAutoLikeSettings(current, 'blocked');
+  assert.equal(blocked.suspended, true);
+  assert.match(blocked.notice, /被拦截/);
 
+  const logs = [];
   const state = {
     now: NOW,
     rows: [capture('2001', modelFocus('oil-geopolitics', 0.9))],
@@ -567,16 +591,29 @@ test('login wall, block and two unconfirmed likes stop auto like', () => {
     openLike: [],
     openUnlike: [],
     settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0 },
+    log: (line) => logs.push(line),
   };
   const service = autoService({ AI_CENTER_X_AUTO_LIKE: 'on' }, state, []);
   service.recordAutoLike('local', { status: 'unconfirmed' });
   service.recordAutoLike('local', { status: 'unconfirmed' });
-  assert.equal(state.settings.suspended, true);
-  assert.equal(service.view('local').autoLike.pageOn, false);
-  assert.match(service.view('local').autoLike.notice, /连续两次/);
+  assert.equal(state.settings.suspended, false);
+  assert.equal(state.settings.pageEnabled, true);
+  assert.equal(state.settings.consecutiveUnconfirmed, 2);
+  assert.equal(service.view('local').autoLike.pageOn, true);
+  assert.equal(service.view('local').autoLike.stopped, false);
+  assert.equal(service.view('local').autoLike.notice, '');
+  assert.match(logs.join('\n'), /x-auto-like failure status=unconfirmed reason=- unconfirmed=2/);
   assert.equal(JSON.stringify(service.view('local')).includes('dirScores'), false);
   assert.equal(JSON.stringify(service.view('local')).includes('focusScore'), false);
   assert.equal(JSON.stringify(service.view('local')).includes('primaryDir'), false);
+  service.recordAutoLike('local', { status: 'login-required' });
+  assert.equal(state.settings.suspended, true);
+  assert.equal(service.view('local').autoLike.pageOn, false);
+  assert.match(service.view('local').autoLike.notice, /重新登录/);
+  assert.equal((await service.dispatch('local')).dispatched, false);
+  service.setPageEnabled('local', true);
+  assert.equal(state.settings.suspended, false);
+  assert.equal((await service.dispatch('local')).dispatched, true);
 });
 
 test('auto like skips ads, official brands, promotions and one-line posts', async () => {
@@ -705,7 +742,7 @@ test('jev off raises the auto like floor to 0.9', async () => {
   assert.equal((await service.dispatch('local')).reason, 'empty');
 });
 
-test('two failed auto like jobs stop before another like is sent', async () => {
+test('failed auto like jobs stay countable and still send the next like', async () => {
   const ready = {
     pageEnabled: true,
     suspended: false,
@@ -734,7 +771,9 @@ test('two failed auto like jobs stop before another like is sent', async () => {
     openLike: [],
     openUnlike: [],
     settings: { ...ready },
+    logLines: [],
   };
+  state.log = (line) => state.logLines.push(line);
   const calls = [];
   const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, calls);
   const continued = await service.dispatch('local');
@@ -755,25 +794,26 @@ test('two failed auto like jobs stop before another like is sent', async () => {
     },
   ];
   state.now = NOW + 15 * 60 * 1000 + 1_000;
-  const stopped = await service.dispatch('local');
-  assert.equal(stopped.dispatched, false);
-  assert.equal(calls.length, 1);
-  assert.equal(state.settings.pageEnabled, false);
-  assert.equal(state.settings.suspended, true);
-  assert.match(state.settings.notice, /连续两次/);
-  assert.match(state.settings.notice, /任务运行超过时限/);
-  const stoppedSettings = state.settings;
-  service.setPageEnabled('local', true);
-  const resumed = await service.dispatch('local');
-  assert.equal(resumed.dispatched, true);
+  const continuedAfter = await service.dispatch('local');
+  assert.equal(continuedAfter.dispatched, true);
+  assert.equal(calls.length, 2);
+  assert.equal(state.settings.pageEnabled, true);
   assert.equal(state.settings.suspended, false);
+  assert.equal(state.settings.consecutiveTaskErrors, 2);
+  assert.equal(state.settings.notice, '');
+  assert.match(state.logLines.join('\n'), /x-auto-like failure status=failed reason=后台进程中断/);
+  assert.match(state.logLines.join('\n'), /reason=任务运行超过时限，已释放以便队列继续/);
 
-  const cleared = nextAutoLikeSettings(stoppedSettings, 'liked');
+  const cleared = nextAutoLikeSettings(state.settings, 'liked');
   assert.equal(cleared.consecutiveTaskErrors, 0);
-  assert.equal(cleared.suspended, true);
+  assert.equal(cleared.suspended, false);
+  assert.equal(cleared.pageEnabled, true);
+  const login = nextAutoLikeSettings(cleared, 'login-required');
+  assert.equal(nextAutoLikeSettings(login, 'liked').suspended, true);
+  assert.equal(nextAutoLikeSettings(login, 'liked').pageEnabled, false);
 });
 
-test('a thrown auto like is reported and two handler failures stop', async () => {
+test('a thrown auto like is reported and repeated handler failures do not suspend', async () => {
   const notes = [];
   const handlers = createFeedInteractionJobHandlers({
     executeLike: async () => {
@@ -803,14 +843,19 @@ test('a thrown auto like is reported and two handler failures stop', async () =>
     openLike: [],
     openUnlike: [],
     settings: { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 },
+    logLines: [],
   };
+  state.log = (line) => state.logLines.push(line);
   const service = autoService({ AI_CENTER_X_AUTO_LIKE: '1' }, state, []);
   service.recordAutoLike('local', notes[0]);
   assert.equal(state.settings.suspended, false);
+  assert.equal(state.settings.pageEnabled, true);
   service.recordAutoLike('local', { status: 'failed', reason: '任务运行超过时限，已释放以便队列继续', jobId: 'job-2' });
-  assert.equal(state.settings.suspended, true);
-  assert.match(state.settings.notice, /连续两次/);
-  assert.match(state.settings.notice, /任务运行超过时限/);
+  assert.equal(state.settings.suspended, false);
+  assert.equal(state.settings.pageEnabled, true);
+  assert.equal(state.settings.consecutiveTaskErrors, 2);
+  assert.equal(state.settings.notice, '');
+  assert.match(state.logLines.join('\n'), /status=failed reason=任务运行超过时限，已释放以便队列继续 unconfirmed=0 unavailable=0 failed=2/);
   service.recordAutoLike('local', notes[0]);
   assert.equal(state.settings.consecutiveTaskErrors, 2);
 });
@@ -1443,15 +1488,18 @@ test('unlike clears the recommendation page cache', async () => {
   assert.equal(invalidated, 'local');
 });
 
-test('three unavailable likes stop auto-like', () => {
+test('three unavailable likes keep auto-like on', () => {
   const current = { pageEnabled: true, suspended: false, notice: '', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0 };
   const once = nextAutoLikeSettings(current, 'unavailable');
   assert.equal(once.pageEnabled, true);
+  assert.equal(once.suspended, false);
   const twice = nextAutoLikeSettings(once, 'unavailable');
   assert.equal(twice.consecutiveUnavailable, 2);
-  const stopped = nextAutoLikeSettings(twice, 'unavailable');
-  assert.equal(stopped.pageEnabled, false);
-  assert.match(stopped.notice, /连续三次/);
+  const third = nextAutoLikeSettings(twice, 'unavailable');
+  assert.equal(third.pageEnabled, true);
+  assert.equal(third.suspended, false);
+  assert.equal(third.consecutiveUnavailable, 3);
+  assert.equal(third.notice, '');
   assert.equal(nextAutoLikeSettings(once, 'liked').consecutiveUnavailable, 0);
 });
 
