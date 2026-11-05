@@ -46,13 +46,13 @@ test('registered like job scopes repository target, deduplicates requests and pr
   } finally { store.close(); }
 });
 
-function browserFixture(states, { failAfterClick=false }={}) {
+function browserFixture(states, { failAfterClick=false, log = () => {} }={}) {
   let clicks=0, reads=0, navigations=0;
   const session={navigate:async()=>{navigations++;},evaluate:async expression=>{
     if (expression.includes(', true,')) {clicks++;if(failAfterClick)throw Error('secret command');return result('unconfirmed');}
     return result(states[Math.min(reads++,states.length-1)]);
   }};
-  const port=createXLikeBrowserPort({browserRuntime:{withSession:async(_,call)=>call(session)},delay:async()=>{}});
+  const port=createXLikeBrowserPort({browserRuntime:{withSession:async(_,call)=>call(session)},delay:async()=>{}, log});
   return {port,counts:()=>({clicks,navigations})};
 }
 
@@ -64,9 +64,62 @@ test('browser like verifies persistence, preserves existing likes and fails clos
   for(const status of ['already-liked','login-required','blocked','not-found']) {
     const fixture=browserFixture([status]);assert.equal((await fixture.port.like('123')).status,status);assert.equal(fixture.counts().clicks,0);
   }
-  const uncertain=browserFixture(['unconfirmed'],{failAfterClick:true});
+  const lines=[];
+  const uncertain=browserFixture(['unconfirmed'],{failAfterClick:true, log:(line)=>lines.push(line)});
   assert.equal((await uncertain.port.like('123')).status,'unconfirmed');assert.equal(uncertain.counts().clicks,1);
+  assert.match(lines[0], /x-like unresolved tweet=123 status=unconfirmed kind=browser-error/);
+  assert.equal(lines.some((line)=>line.includes('secret')), false);
   const probe=browserFixture(['unconfirmed']);assert.equal((await probe.port.probe('123')).status,'unconfirmed');assert.equal(probe.counts().clicks,0);
+});
+
+test('unconfirmed likes record a safe kind without the browser error text', async () => {
+  const lines = [];
+  const log = (line) => lines.push(line);
+  const timeout = new Error('bsk timed out after 10000ms');
+  timeout.details = { kind: 'timeout' };
+  const session = {
+    navigate: async () => {},
+    evaluate: async (expression) => {
+      if (expression.includes(', true,')) throw timeout;
+      return result('unconfirmed');
+    },
+  };
+  const port = createXLikeBrowserPort({
+    browserRuntime: { withSession: async (_options, call) => call(session) },
+    delay: async () => {},
+    log,
+  });
+  assert.equal((await port.like('123')).status, 'unconfirmed');
+  assert.match(lines[0], /status=unconfirmed kind=timeout/);
+  assert.equal(lines[0].includes('bsk'), false);
+  assert.equal(lines[0].includes('10000'), false);
+
+  lines.length = 0;
+  let reads = 0;
+  const changed = createXLikeBrowserPort({
+    browserRuntime: {
+      withSession: async (_options, call) => call({
+        navigate: async () => {},
+        evaluate: async (expression) => {
+          if (expression.includes(', true,')) return result('unconfirmed');
+          reads += 1;
+          if (reads === 1) return result('unconfirmed');
+          return { status: 'already-liked', accountHandle: 'other', checkedAt: 1 };
+        },
+      }),
+    },
+    delay: async () => {},
+    log,
+  });
+  assert.equal((await changed.like('456')).status, 'unconfirmed');
+  assert.match(lines[0], /tweet=456 status=unconfirmed kind=account-changed/);
+
+  lines.length = 0;
+  const stuck = browserFixture(['unconfirmed'], { log });
+  assert.equal((await stuck.port.probe('123')).status, 'unconfirmed');
+  assert.equal(lines.length, 0);
+  assert.equal((await stuck.port.like('123')).status, 'unconfirmed');
+  assert.match(lines[0], /kind=confirm-timeout/);
 });
 
 test('HTTP like requires pairing, rejects command overrides and scopes job reads',async()=>{

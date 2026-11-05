@@ -294,48 +294,36 @@ export function normalizeAutoLikeSettings(payload) {
   };
 }
 
-export function nextAutoLikeSettings(settings, status, reason = '') {
+function cappedCount(value) {
+  return Math.max(0, Math.min(9, Number(value) || 0));
+}
+
+// 登录失效和页面验证需要人处理，才关掉页面开关。
+// 未确认、暂时点不到、任务失败只累计次数，不挂起。成功后清零。原因由调用方记日志。
+function nextGuardedSettings(settings, status, { loginNotice, blockedNotice, success }) {
   const current = normalizeAutoLikeSettings(settings);
   if (status === 'login-required') {
-    return { ...current, pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
+    return { ...current, pageEnabled: false, suspended: true, notice: loginNotice, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
   }
   if (status === 'blocked') {
-    return { ...current, pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
+    return { ...current, pageEnabled: false, suspended: true, notice: blockedNotice, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
   }
-  if (status === 'unavailable') {
-    const consecutiveUnavailable = current.consecutiveUnavailable + 1;
-    if (consecutiveUnavailable >= 3) {
-      return { ...current, pageEnabled: false, suspended: true, notice: '连续三次无法操作点赞按钮，已停止自动点赞', consecutiveUnconfirmed: 0, consecutiveUnavailable };
-    }
-    return { ...current, consecutiveUnavailable };
-  }
-  if (status === 'unconfirmed') {
-    const consecutiveUnconfirmed = current.consecutiveUnconfirmed + 1;
-    if (consecutiveUnconfirmed >= 2) {
-      return { ...current, pageEnabled: false, suspended: true, notice: '连续两次没有确认点赞结果，已停止自动点赞', consecutiveUnconfirmed, consecutiveUnavailable: current.consecutiveUnavailable };
-    }
-    return { ...current, consecutiveUnconfirmed };
-  }
-  if (status === 'failed') {
-    const consecutiveTaskErrors = current.consecutiveTaskErrors + 1;
-    const why = text(reason).slice(0, 80) || '任务出错';
-    if (consecutiveTaskErrors >= 2) {
-      return {
-        ...current,
-        pageEnabled: false,
-        suspended: true,
-        notice: `连续两次点赞任务出错（${why}），已停止自动点赞`.slice(0, 180),
-        consecutiveUnconfirmed: 0,
-        consecutiveUnavailable: 0,
-        consecutiveTaskErrors,
-      };
-    }
-    return { ...current, consecutiveTaskErrors };
-  }
-  if (status === 'liked' || status === 'already-liked') {
+  if (status === 'unavailable') return { ...current, consecutiveUnavailable: cappedCount(current.consecutiveUnavailable + 1) };
+  if (status === 'unconfirmed') return { ...current, consecutiveUnconfirmed: cappedCount(current.consecutiveUnconfirmed + 1) };
+  if (status === 'failed') return { ...current, consecutiveTaskErrors: cappedCount(current.consecutiveTaskErrors + 1) };
+  if (success(status)) {
     return { ...current, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
   }
   return current;
+}
+
+export function nextAutoLikeSettings(settings, status, reason = '') {
+  void reason;
+  return nextGuardedSettings(settings, status, {
+    loginNotice: '采集浏览器需要重新登录 X，已停止自动点赞',
+    blockedNotice: 'X 页面被拦截或出现验证，已停止自动点赞',
+    success: (value) => value === 'liked' || value === 'already-liked',
+  });
 }
 
 export function normalizeNotInterestedSettings(payload) {
@@ -343,47 +331,12 @@ export function normalizeNotInterestedSettings(payload) {
 }
 
 export function nextNotInterestedSettings(settings, status, reason = '') {
-  const current = normalizeNotInterestedSettings(settings);
-  if (status === 'login-required') {
-    return { ...current, pageEnabled: false, suspended: true, notice: '采集浏览器需要重新登录 X，已停止自动不感兴趣', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
-  }
-  if (status === 'blocked') {
-    return { ...current, pageEnabled: false, suspended: true, notice: 'X 页面被拦截或出现验证，已停止自动不感兴趣', consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
-  }
-  if (status === 'unavailable') {
-    const consecutiveUnavailable = current.consecutiveUnavailable + 1;
-    if (consecutiveUnavailable >= 3) {
-      return { ...current, pageEnabled: false, suspended: true, notice: '连续三次无法操作不感兴趣，已停止', consecutiveUnconfirmed: 0, consecutiveUnavailable };
-    }
-    return { ...current, consecutiveUnavailable };
-  }
-  if (status === 'unconfirmed') {
-    const consecutiveUnconfirmed = current.consecutiveUnconfirmed + 1;
-    if (consecutiveUnconfirmed >= 2) {
-      return { ...current, pageEnabled: false, suspended: true, notice: '连续两次没有确认不感兴趣结果，已停止', consecutiveUnconfirmed, consecutiveUnavailable: current.consecutiveUnavailable };
-    }
-    return { ...current, consecutiveUnconfirmed };
-  }
-  if (status === 'failed') {
-    const consecutiveTaskErrors = current.consecutiveTaskErrors + 1;
-    const why = text(reason).slice(0, 80) || '任务出错';
-    if (consecutiveTaskErrors >= 2) {
-      return {
-        ...current,
-        pageEnabled: false,
-        suspended: true,
-        notice: `连续两次不感兴趣任务出错（${why}），已停止`.slice(0, 180),
-        consecutiveUnconfirmed: 0,
-        consecutiveUnavailable: 0,
-        consecutiveTaskErrors,
-      };
-    }
-    return { ...current, consecutiveTaskErrors };
-  }
-  if (status === 'done' || status === 'already') {
-    return { ...current, consecutiveUnconfirmed: 0, consecutiveUnavailable: 0, consecutiveTaskErrors: 0 };
-  }
-  return current;
+  void reason;
+  return nextGuardedSettings(settings, status, {
+    loginNotice: '采集浏览器需要重新登录 X，已停止自动不感兴趣',
+    blockedNotice: 'X 页面被拦截或出现验证，已停止自动不感兴趣',
+    success: (value) => value === 'done' || value === 'already',
+  });
 }
 
 export function jevKept(metadata) {
