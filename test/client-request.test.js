@@ -5,6 +5,7 @@ import {
   cacheTtlFor,
   createRequestLayer,
   isPreparedPending,
+  localizationsStillPending,
   planTranslationPoll,
   resolvePreparedPending,
   requestDedupeKey,
@@ -105,6 +106,39 @@ test('a prepared pending body is retried and is not stored in the request cache'
   const again = await layer.run('done', () => Promise.resolve({ ok: true, items: [2] }), { ttl: 8_000 });
   assert.equal(settled.items[0], 1);
   assert.equal(again.items[0], 1);
+});
+
+test('a board whose titles are still pending is not reused after the translation completes', async () => {
+  const pending = {
+    ok: true,
+    board: { releases: [{ releaseId: 'wh-1', title: 'Nominations and Withdrawals Sent to the Senate' }] },
+    localizations: { 'wh-1': { id: 'wh-1', text: '', pending: true, status: 'pending' } },
+  };
+  const ready = {
+    ok: true,
+    board: pending.board,
+    localizations: { 'wh-1': { id: 'wh-1', text: '已发送至参议院的提名与撤回', pending: false, status: 'ready' } },
+  };
+  assert.equal(localizationsStillPending(pending), true);
+  assert.equal(localizationsStillPending(ready), false);
+  assert.equal(isPreparedPending(pending), false);
+  let clock = 5_000;
+  let calls = 0;
+  const layer = createRequestLayer({ now: () => clock });
+  const factory = () => {
+    calls += 1;
+    return Promise.resolve(calls === 1 ? pending : ready);
+  };
+  const first = await layer.run('GET /api/v1/static-signals/board?from=1', factory, { ttl: 20_000 });
+  assert.equal(first.localizations['wh-1'].text, '');
+  clock += 1_000;
+  const second = await layer.run('GET /api/v1/static-signals/board?from=1', factory, { ttl: 20_000 });
+  assert.equal(calls, 2);
+  assert.equal(second.localizations['wh-1'].text, '已发送至参议院的提名与撤回');
+  clock += 1_000;
+  const cached = await layer.run('GET /api/v1/static-signals/board?from=1', factory, { ttl: 20_000 });
+  assert.equal(calls, 2);
+  assert.equal(cached.localizations['wh-1'].text, '已发送至参议院的提名与撤回');
 });
 
 test('a caught rejection does not leave the inflight cleanup unhandled', async () => {

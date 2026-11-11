@@ -25,6 +25,8 @@
 
 ## 当前
 
+- `progress/2026-11-11-feed-translation-refresh.md`：信息流官方标题在译文晚到时不再停在英文或「无标题」，空的旧响应也不能盖掉已经显示的中文。阅读页和列表用同一份中文标题。不新增 migration。需要重启 Web，浏览器再加载一次。
+
 - `progress/2026-11-05-x-auto-like-no-suspend.md`：自动点赞符合条件就继续点。未确认、暂时点不到、任务失败只累计并写日志，不再关掉页面开关。登录失效和页面验证仍会停。不感兴趣同样处理。不新增 migration。需要同时重启 Web 和 Worker。
 
 - `progress/2026-11-04-overview-quote-spacing.md`：总览行情条的指数现价固定两位小数。393 宽的上证50、创业板50、科创50、恒生指数不再贴成一串。股票页仍保留来源小数。不新增 migration。需要重启 Web。
