@@ -8,6 +8,13 @@ import { renderMarkdownInto, renderFeedTextInto, splitFeedText, stripSharePlaceh
 import { attachYoutubeHeadingTimes, youtubeVideoId, youtubeWatchUrl } from './youtube-article-links.js?v=dev';
 import { articleReadKey, createArticleReadPosition } from './article-read-position.js?v=dev';
 import { cacheTtlFor, createRequestLayer, isPreparedPending, planTranslationPoll, requestDedupeKey, resolvePreparedPending, TRANSLATION_POLL_DEADLINE_MS } from './client-request.js?v=dev';
+import {
+  articleTitle,
+  localizationMissingTitle,
+  localizationStillOpen,
+  mergeLocalizationMap,
+  nextOfficialLocalizationRefresh,
+} from './feed-localization.js?v=dev';
 import { planAskRunsFetch } from './ask-runs.js?v=dev';
 import { behaviorClickName, behaviorControlLabel, behaviorDetailsExpand } from './behavior-clicks.js?v=dev';
 import { browserPagePersist, createPageCache, pageCacheFresh, pageCacheKey } from './page-cache.js?v=dev';
@@ -851,12 +858,13 @@ function postNeedsChineseTranslation(post) {
 function mergeLocalizations(payload) {
   const incoming = payload?.localizations;
   if (!incoming || typeof incoming !== 'object') return;
-  const next = { ...incoming };
-  for (const row of Object.values(incoming)) {
-    if (row?.id && next[row.id] == null) next[row.id] = row;
-  }
-  state.sourceLocalizations = { ...state.sourceLocalizations, ...next };
+  const merged = mergeLocalizationMap(state.sourceLocalizations, incoming);
+  if (merged === state.sourceLocalizations) return;
+  state.sourceLocalizations = merged;
   bumpFeedView();
+  const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
+  if (view === 'feed' && elements?.feed) renderPosts();
+  else if (view === 'page' && state.pageKind === 'article') renderArticlePage();
 }
 
 function postIsTranslating(post) {
@@ -5404,7 +5412,8 @@ function feedListTitle(post) {
   const ready = readyZhTitle(post);
   if (ready) return { title: ready, tag: '' };
   const original = String(post?.title || '').trim();
-  const title = original && original !== '正在翻译…' ? original : '无标题';
+  if (original === '正在翻译…') return { title: original, tag: '' };
+  const title = original || '无标题';
   if (post?.needsTranslation === false) return { title, tag: '' };
   const needs = post?.translationStatus === 'failed' || postIsTranslating(post) || textNeedsZhView(post?.title || post?.body || post?.summary || '');
   return { title, tag: needs ? '暂未翻译' : '' };
@@ -7640,10 +7649,57 @@ function staticBoardRange(windowId) {
   return { from: start.getTime(), to: end.getTime() - 1 };
 }
 
+function officialLocalizationRows() {
+  const ids = [];
+  const seen = new Set();
+  for (const release of state.staticBoard?.releases || []) {
+    const id = String(release?.releaseId || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const row = state.sourceLocalizations[id];
+    if (row) ids.push(row);
+  }
+  return ids;
+}
+
+function officialLocalizationPending() {
+  return officialLocalizationRows().some((row) => localizationStillOpen(row));
+}
+
+function officialLocalizationMissing() {
+  return officialLocalizationRows().some((row) => localizationMissingTitle(row));
+}
+
+function scheduleOfficialLocalizationRefresh() {
+  window.clearTimeout(scheduleOfficialLocalizationRefresh.timer);
+  scheduleOfficialLocalizationRefresh.timer = 0;
+  if (!officialLocalizationPending()) {
+    scheduleOfficialLocalizationRefresh.attempt = 0;
+    return;
+  }
+  const delay = nextOfficialLocalizationRefresh(scheduleOfficialLocalizationRefresh.attempt || 0);
+  if (!delay) return;
+  scheduleOfficialLocalizationRefresh.attempt = (scheduleOfficialLocalizationRefresh.attempt || 0) + 1;
+  scheduleOfficialLocalizationRefresh.timer = window.setTimeout(() => {
+    scheduleOfficialLocalizationRefresh.timer = 0;
+    const view = typeof document === 'undefined' ? '' : (document.body?.dataset?.view || '');
+    const onFeed = view === 'feed';
+    const onOfficialArticle = view === 'page' && state.pageKind === 'article' && String(state.pageId || '').startsWith('official/');
+    if (!onFeed && !onOfficialArticle) return;
+    if (!officialLocalizationPending()) return;
+    loadStaticSignalBoard({ refresh: true }).catch(() => {});
+  }, delay);
+}
+
 async function loadStaticSignalBoard({ refresh = false } = {}) {
-  if (!state.session || state.staticBoardLoading) return;
+  if (!state.session) return;
+  if (state.staticBoardLoading) {
+    if (refresh) loadStaticSignalBoard.again = true;
+    return;
+  }
   state.staticBoardLoading = true;
   state.staticBoardError = '';
+  const token = (loadStaticSignalBoard.token = (Number(loadStaticSignalBoard.token) || 0) + 1);
   renderStaticSignalBoard();
   try {
     const range = staticBoardRange(state.staticBoardWindow);
@@ -7653,20 +7709,32 @@ async function loadStaticSignalBoard({ refresh = false } = {}) {
       includeUndated: state.staticBoardWindow === 'all' ? '1' : '0',
     });
     if (refresh) params.set('refresh', '1');
-    const payload = await api(`/api/v1/static-signals/board?${params}`, { timeoutMs: 45_000 });
+    const payload = await api(`/api/v1/static-signals/board?${params}`, {
+      timeoutMs: 45_000,
+      fresh: refresh,
+      cache: refresh ? 'no-store' : undefined,
+    });
+    if (token !== loadStaticSignalBoard.token) return;
     state.staticBoard = payload.board;
     mergeLocalizations(payload);
     autoLocalizeSources().catch(() => {});
   } catch (error) {
+    if (token !== loadStaticSignalBoard.token) return;
     state.staticBoardError = error instanceof Error ? error.message : '静态信号读取失败';
     throw error;
   } finally {
-    state.staticBoardLoading = false;
-    renderStaticSignalBoard();
-    renderStaticSourceCatalog();
-    renderHomeSourceLine();
-    renderOverviewTimeline();
-    renderPosts();
+    if (token === loadStaticSignalBoard.token) {
+      state.staticBoardLoading = false;
+      renderStaticSignalBoard();
+      renderStaticSourceCatalog();
+      renderHomeSourceLine();
+      renderOverviewTimeline();
+      renderPosts();
+      const again = loadStaticSignalBoard.again;
+      loadStaticSignalBoard.again = false;
+      if (again) loadStaticSignalBoard({ refresh: true }).catch(() => {});
+      else scheduleOfficialLocalizationRefresh();
+    }
   }
 }
 
@@ -10993,7 +11061,14 @@ function renderArticlePage() {
   const head = document.createElement('header');
   head.className = 'detail-head reader-head';
   head.innerHTML = `<h2 class="detail-title"></h2><div class="detail-meta reader-meta"></div>`;
-  const shownTitle = state.readerLang==='original' ? post.title : postDisplayTitle(post);
+  const releaseId = post?.release?.releaseId || (post?.kind === 'official' ? post.id : '');
+  const localized = releaseId ? localizedCopy(releaseId, '') : '';
+  const shownTitle = articleTitle({
+    lang: state.readerLang,
+    localized,
+    displayed: postDisplayTitle(post),
+    original: post?.release?.title || post?.originalTitle || post?.title || '',
+  });
   head.querySelector('h2').textContent = shownTitle;
   const meta = head.querySelector('.reader-meta');
   const youtubeId = youtubeVideoId(post.sourceUrl);
@@ -11295,6 +11370,7 @@ async function loadOfficialArticle(post) {
         status: 'ready',
         sourceText: item.originalTitle || post.release?.title || '',
       };
+      bumpFeedView();
     }
     const text = String(item.body || '').trim();
     state.officialBodies[id] = text ? { status: 'ready', text } : { status: 'index' };
@@ -16254,6 +16330,9 @@ function ensureFeedSources(sources) {
   if (!focusWindow && sources.includes('xueqiu') && state.xueqiuFocusMerged && !state.xueqiuLoading) {
     tasks.push(loadXueqiuFeed({ refresh: false }).catch((error) => showToast(error.message)));
   }
+  if (sources.includes('official') && state.staticBoard && !state.staticBoardLoading && officialLocalizationMissing()) {
+    tasks.push(loadStaticSignalBoard({ refresh: true }).catch((error) => showToast(error.message)));
+  }
   const pending = Promise.all(tasks);
   if (tasks.length) pending.then(() => noteFeedLoaded()).catch(() => {});
   return pending.finally(() => {
@@ -16275,7 +16354,9 @@ function reloadVisibleFeed() {
   if (sources.includes('media')) tasks.push(loadMediaFeed());
   if (sources.includes('x')) tasks.push(loadXFeed({ refresh: false }));
   if (sources.includes('xueqiu')) tasks.push(loadXueqiuFeed({ refresh: false }));
-  if (sources.includes('official') && !state.staticBoard) tasks.push(loadStaticSignalBoard());
+  if (sources.includes('official') && (!state.staticBoard || officialLocalizationMissing())) {
+    tasks.push(loadStaticSignalBoard({ refresh: Boolean(state.staticBoard) }));
+  }
   return Promise.all(tasks);
 }
 
@@ -16459,6 +16540,7 @@ async function autoLocalizeSources() {
   for (const row of waiting) state.sourceTranslationInflight.add(row.id);
   if (!waiting.length) return;
   state.sourceLocalizing = true;
+  let changed = false;
   try {
     const payload = await requestTranslation('/api/v1/translate/batch', {
       method: 'POST',
@@ -16477,6 +16559,7 @@ async function autoLocalizeSources() {
       const text = byId.get(row.id);
       if (!text) continue;
       state.sourceLocalizations[sourceId] = { ...row, text, pending: false, status: 'ready' };
+      changed = true;
     }
     const dialogItems = elements['source-dialog-items'];
     if (dialogItems && elements['source-dialog']?.open) {
@@ -16498,13 +16581,18 @@ async function autoLocalizeSources() {
     for (const [sourceId, row] of Object.entries(state.sourceLocalizations)) {
       if (!failedIds.has(row?.id) || row.text) continue;
       state.sourceLocalizations[sourceId] = { ...row, pending: false, status: 'failed' };
+      changed = true;
     }
   } finally {
     state.sourceLocalizing = false;
+    if (changed) bumpFeedView();
     renderStaticSignalBoard();
     renderMarketNativeBoard();
     renderOverviewTimeline();
     renderPosts();
+    if (typeof document !== 'undefined' && document.body?.dataset?.view === 'page' && state.pageKind === 'article') {
+      renderArticlePage();
+    }
   }
 }
 

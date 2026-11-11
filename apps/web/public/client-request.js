@@ -49,6 +49,14 @@ export function isPreparedPending(payload) {
   return Boolean(payload && payload.ok === true && payload.pending === true);
 }
 
+// A board can be ready while its titles are still waiting on the translator.
+// Caching that payload replays the untranslated list after the titles exist.
+export function localizationsStillPending(payload) {
+  const rows = payload?.localizations;
+  if (!rows || typeof rows !== 'object' || Array.isArray(rows)) return false;
+  return Object.values(rows).some((row) => row && row.pending === true && !String(row.text || '').trim());
+}
+
 export async function resolvePreparedPending(load, {
   sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   signal,
@@ -107,7 +115,9 @@ export function createRequestLayer({ maxInflight = API_REQUEST_LIMIT, now = () =
       resolve = res;
       reject = rej;
     }).then((value) => {
-      if (!bypass && ttl > 0 && !isPreparedPending(value)) cache.set(key, { value, expires: now() + ttl });
+      if (!bypass && ttl > 0 && !isPreparedPending(value) && !localizationsStillPending(value)) {
+        cache.set(key, { value, expires: now() + ttl });
+      }
       return value;
     });
     if (share) {
