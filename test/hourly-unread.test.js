@@ -1243,3 +1243,125 @@ test('a past day can open today latest hour, and a bare hour prefers today', asy
   assert.notEqual(routes.at(-1), `report/${yesterdayKey}?hour=23`);
   page.stop();
 });
+
+function shanghaiHour(date, hour) {
+  return Date.parse(`${date}T${String(hour).padStart(2, '0')}:00:00+08:00`);
+}
+
+function installReportHash(hash) {
+  const previousLocation = globalThis.location;
+  const previousHistory = globalThis.history;
+  globalThis.location = { pathname: '/', search: '', hash };
+  globalThis.history = {
+    state: null,
+    replaceState(state, _title, url) {
+      this.state = state;
+      const next = String(url);
+      globalThis.location.hash = next.includes('#') ? next.slice(next.indexOf('#')) : '';
+    },
+  };
+  return () => {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    if (previousHistory === undefined) delete globalThis.history;
+    else globalThis.history = previousHistory;
+  };
+}
+
+test('a historical day keeps its own hours after the recent week index arrives', async () => {
+  const todayKey = shanghaiDayKey(Date.now());
+  const todayStart = shanghaiHour(todayKey, 0);
+  const historical = '2026-11-18';
+  assert.ok(todayStart - shanghaiHour(historical, 0) > 7 * 24 * HOUR);
+  const h22 = edition('edition:hist1122xxxx', shanghaiHour(historical, 22), []);
+  const h23 = edition('edition:hist1123xxxx', shanghaiHour(historical, 23), ['n23']);
+  const priorDay = shanghaiDayKey(todayStart - 24 * HOUR);
+  const prior23 = edition('edition:prior23hourxx', shanghaiHour(priorDay, 23), ['p23']);
+  const prior22 = edition('edition:prior22hourxx', shanghaiHour(priorDay, 22), ['p22']);
+  const today09 = edition('edition:today0900xxx', shanghaiHour(todayKey, 9), ['t09']);
+  const today10 = edition('edition:today1000xxx', shanghaiHour(todayKey, 10), []);
+  const dated = manifest([h23, h22]);
+  const week = manifest([today10, today09, prior23, prior22]);
+  const restore = installReportHash(`#report/${historical}?hour=23`);
+  const routes = [];
+  try {
+    const root = new El('div');
+    root.isConnected = true;
+    const host = hostFor('historical-hour-strip', () => dated);
+    host.navigate = (path) => { routes.push(path); };
+    const page = createInformationTreePage(host);
+    await page.mount(root, { mode: 'hourly', manifest: dated, date: historical, hour: 23 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(globalThis.location.hash, `#report/${historical}?hour=23`);
+    assert.deepEqual(chips(root).map((item) => item.textContent), ['23:00', '22:00']);
+    assert.equal(chip(root, h23.window.startAt).classList.contains('is-active'), true);
+    assert.equal(root.querySelector('.tree-hour-day').textContent, '11月18日');
+    assert.equal(root.querySelector('.tree-period-label').textContent, '23:00–00:00');
+    assert.match(root.querySelector('.news-day-label').textContent, /2026年11月18日/);
+    assert.match(root.querySelector('.news-day-label').textContent, /23:00–00:00/);
+    assert.equal(root.querySelector('h3').textContent, '标题');
+
+    page.acceptManifest(week);
+    assert.equal(globalThis.location.hash, `#report/${historical}?hour=23`);
+    assert.deepEqual(chips(root).map((item) => item.textContent), ['23:00', '22:00']);
+    assert.equal(chip(root, h23.window.startAt).classList.contains('is-active'), true);
+    assert.equal(chip(root, today09.window.startAt), undefined);
+    assert.equal(chip(root, prior23.window.startAt), undefined);
+    assert.equal(root.querySelector('.tree-hour-day').textContent, '11月18日');
+    assert.equal(root.querySelector('.tree-period-label').textContent, '23:00–00:00');
+    assert.equal(root.querySelector('h3').textContent, '标题');
+    assert.equal(root.querySelector('.tree-hour-today').hidden, false);
+    assert.equal(root.querySelector('.tree-hour-yesterday').textContent, '11月17日 ›');
+
+    await root.querySelector('.tree-hour-yesterday').listeners.click[0]();
+    assert.equal(routes.at(-1), `report/2026-11-17?hour=23`);
+
+    await root.querySelector('.tree-hour-today').listeners.click[0]();
+    assert.equal(routes.at(-1), 'report?hour=09');
+
+    await page.selectHour(22);
+    assert.equal(globalThis.location.hash, `#report/${historical}?hour=22`);
+    assert.equal(chip(root, h22.window.startAt).classList.contains('is-active'), true);
+    assert.equal(chip(root, prior22.window.startAt), undefined);
+    assert.equal(root.querySelector('.tree-hour-empty').textContent, '本小时暂无入料');
+    assert.equal(root.querySelector('.tree-period-label').textContent, '22:00–23:00');
+    page.stop();
+  } finally {
+    restore();
+  }
+});
+
+test('a dated hash is not rewritten onto another day when the index lacks that day', async () => {
+  const todayKey = shanghaiDayKey(Date.now());
+  const todayStart = shanghaiHour(todayKey, 0);
+  const historical = '2026-11-18';
+  const priorDay = shanghaiDayKey(todayStart - 24 * HOUR);
+  const prior23 = edition('edition:missingday23x', shanghaiHour(priorDay, 23), ['p23']);
+  const today09 = edition('edition:missingday09x', shanghaiHour(todayKey, 9), ['t09']);
+  const week = manifest([today09, prior23]);
+  const restore = installReportHash(`#report/${historical}?hour=23`);
+  const routes = [];
+  try {
+    const root = new El('div');
+    root.isConnected = true;
+    const host = hostFor('historical-hour-missing', () => week);
+    host.navigate = (path) => { routes.push(path); };
+    const page = createInformationTreePage(host);
+    await page.mount(root, { mode: 'hourly', manifest: week, date: historical, hour: 23 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(globalThis.location.hash, `#report/${historical}?hour=23`);
+    assert.equal(chips(root).some((item) => item.dataset.start === String(prior23.window.startAt)), false);
+    assert.equal(chips(root).some((item) => item.dataset.start === String(today09.window.startAt)), false);
+    assert.equal(root.querySelector('.tree-hour-day').textContent, '11月18日');
+    assert.equal(root.querySelector('.tree-hour-empty').textContent, '这个小时还没有小时报。');
+    await root.querySelector('.tree-hour-yesterday').listeners.click[0]();
+    assert.equal(routes.at(-1), 'report/2026-11-17?hour=23');
+    await root.querySelector('.tree-hour-today').listeners.click[0]();
+    assert.equal(routes.at(-1), 'report?hour=09');
+    page.stop();
+  } finally {
+    restore();
+  }
+});
