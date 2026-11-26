@@ -191,13 +191,27 @@ export function createInformationTreePage(host) {
   const fetchManifest=(force=false)=>{if(host.loadTreeManifest)return host.loadTreeManifest({force});const endAt=Date.now()+1;return api(`/api/v1/reports/tree?view=index&startAt=${endAt-7*86400000}&endAt=${endAt}`);};
   function acceptManifest(next) {
     if (!next || !root) return;
-    manifest = next;
+    manifest = retainViewedDayHours(manifest, next);
     if (mode === 'hourly') {
       paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);
       paintHourUnread();
     } else if (mode === 'daily' && !showMaterials) {
       paintDailyChips(recentDailies());
     }
+  }
+  // 正文先按历史日的窄索引画出来，随后补上的近 7 日索引往往不含更早的那一天。
+  // 把这一天的刊期留在合并结果里，小时条和「昨天」才不会被今天的同一钟点换掉。
+  function retainViewedDayHours(current, next) {
+    if (mode !== 'hourly' || !dateFilter || !current?.hours?.length) return next;
+    const nextHours = Array.isArray(next?.hours) ? next.hours : [];
+    const onViewedDay = row => {
+      const chosen = row?.edition || row?.attempt;
+      return Boolean(chosen?.window && day(chosen.window.startAt) === dateFilter);
+    };
+    if (nextHours.some(onViewedDay)) return next;
+    const kept = current.hours.filter(onViewedDay);
+    if (!kept.length) return next;
+    return { ...next, hours: [...nextHours, ...kept] };
   }
   function invalidateInformationIndex(){informationEpoch++;informationByWindow.clear();informationLoads.clear();}
   async function loadInformationIndex(window){
@@ -657,8 +671,12 @@ export function createInformationTreePage(host) {
   function persistSeen(){try{storage()?.setItem(seenKey(),JSON.stringify(seenIds.slice(-400)));}catch{}}
   function hourUnread(edition){return hourHasCopy(edition)&&editionIdOk(edition.id)&&edition.id!==opening.id&&!seen.has(edition.id);}
   function ensureSelectedHour(rows){
-    if(!selectedHourStart || !rows.some(item=>item.window.startAt===selectedHourStart)) selectedHourStart=rows[0]?.window.startAt || 0;
-    return rows.find(item=>item.window.startAt===selectedHourStart) || null;
+    const list=Array.isArray(rows) ? rows : [];
+    const scoped=dateFilter ? list.filter(item=>day(item.window.startAt)===dateFilter) : list;
+    // 正在看的历史日不在新索引里时，不要改去别的日期上最新的一小时。
+    if(dateFilter && !scoped.length) return null;
+    if(!selectedHourStart || !scoped.some(item=>item.window.startAt===selectedHourStart)) selectedHourStart=scoped[0]?.window.startAt || 0;
+    return scoped.find(item=>item.window.startAt===selectedHourStart) || null;
   }
   function beginOpening(edition){
     opening={id:hourHasCopy(edition)&&editionIdOk(edition.id)&&!seen.has(edition.id)?edition.id:'',ticket:++openTicket};
@@ -697,6 +715,7 @@ export function createInformationTreePage(host) {
     if(suppressHourHash || !startAt || mode!=='hourly')return;
     const hh=String(hourClock(startAt)).padStart(2,'0');
     const date=day(startAt), today=day(Date.now());
+    if(dateFilter && date!==dateFilter) return;
     const node=pendingNodeId ? `&node=${encodeURIComponent(pendingNodeId)}` : '';
     const hash=date===today ? `#report?hour=${hh}${node}` : `#report/${date}?hour=${hh}${node}`;
     host.syncHour?.(hourClock(startAt), {node: pendingNodeId || '', hash, date: date===today ? '' : date});
@@ -716,6 +735,26 @@ export function createInformationTreePage(host) {
     const path = String(globalThis.location?.hash || '').replace(/^#/, '').split('?')[0];
     const match = /^report\/(\d{4}-\d{2}-\d{2})$/.exec(path);
     return match ? match[1] : '';
+  }
+  function viewedDateKey(){
+    if(dateFilter) return dateFilter;
+    if(selectedHourStart) return day(selectedHourStart);
+    return briefDateFromHash() || day(Date.now());
+  }
+  function viewedClockHour(){
+    if(selectedHourStart && day(selectedHourStart)===viewedDateKey()) return hourClock(selectedHourStart);
+    if(pendingClockHour!=null) return pendingClockHour;
+    const match=/[?&]hour=(\d{1,2})(?:&|$)/.exec(String(globalThis.location?.hash || ''));
+    if(match){
+      const hour=Number(match[1]);
+      if(hour>=0 && hour<=23) return hour;
+    }
+    return selectedHourStart ? hourClock(selectedHourStart) : hourClock(Date.now());
+  }
+  function shiftDateKey(dateKey, days){
+    const at=Date.parse(`${dateKey}T12:00:00+08:00`);
+    if(!Number.isFinite(at)) return dateKey;
+    return day(at+days*86400000);
   }
   function writeBriefMode(next) {
     if (suppressHourHash) return;
@@ -756,8 +795,9 @@ export function createInformationTreePage(host) {
   function periodCaption(){
     if(mode==='hourly'){
       const edition=hourRows().find(item=>item.window.startAt===selectedHourStart);
-      if(!edition) return '选择小时';
-      return `${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`;
+      if(edition && (!dateFilter || day(edition.window.startAt)===dateFilter)) return `${clock(edition.window.startAt)}\u2013${clock(edition.window.endAt)}`;
+      if(dateFilter && selectedHourStart && day(selectedHourStart)===dateFilter) return `${clock(selectedHourStart)}\u2013${clock(selectedHourStart+HOUR_MS)}`;
+      return '选择小时';
     }
     const editions=recentDailies();
     const edition=editions.find(item=>item.window.startAt===dailyStart) || editions[0];
@@ -839,18 +879,21 @@ export function createInformationTreePage(host) {
     const focusDay=day(selectedRow.window.startAt);
     return rows.filter(item=>day(item.window.startAt)===focusDay);
   }
+  // 地址写了历史日期时，只在这一天里对钟点。这一天不在索引里时，不要落到别的日期的同一钟点。
   // 地址只写了钟点、没有日期时，优先落在今天。否则会沿用上一次停住的那一天，把今天 15 点开成昨天 15 点。
   function rowsForPendingClock(all){
     const rows=Array.isArray(all) ? all : [];
-    if(dateFilter){
-      const filtered=rows.filter(item=>day(item.window.startAt)===dateFilter);
-      return filtered.length ? filtered : rows;
-    }
+    if(dateFilter) return rows.filter(item=>day(item.window.startAt)===dateFilter);
     const todayKey=day(Date.now());
     const todayRows=rows.filter(item=>day(item.window.startAt)===todayKey);
     if(todayRows.length) return todayRows;
     const focused=focusedHourRows(rows);
     return focused.length ? focused : rows;
+  }
+  function hourSelectionRows(allHours){
+    const picked=pendingClockHour!=null ? rowsForPendingClock(allHours) : focusedHourRows(allHours);
+    if(picked.length || dateFilter) return picked;
+    return allHours;
   }
   function hourLooksReadable(edition){
     if(readingIndex instanceof Map){
@@ -977,17 +1020,21 @@ export function createInformationTreePage(host) {
   function chipText(edition){
     return clock(edition.window.startAt);
   }
-  function paintRail(rows){
-    const focus=rows[0];
-    if(!hourDay || !focus) return;
-    const focusDay=day(focus.window.startAt), today=day(Date.now()), yesterday=day(Date.now()-86400000);
-    hourDay.textContent=focusDay===today ? '今天' : focusDay===yesterday ? '昨天' : monthDay(focus.window.startAt);
+  function paintViewedDay(at){
+    if(!hourDay || !Number.isFinite(at)) return;
+    const focusDay=day(at), today=day(Date.now()), yesterday=day(Date.now()-86400000);
+    hourDay.textContent=focusDay===today ? '今天' : focusDay===yesterday ? '昨天' : monthDay(at);
     if(hourToday) hourToday.hidden=focusDay===today || !todayHourTarget();
     if(hourNow) hourNow.hidden=focusDay!==today;
     if(hourYesterday){
-      const prev=day(focus.window.startAt-86400000);
-      hourYesterday.textContent=prev===yesterday ? '昨天 ›' : `${monthDay(focus.window.startAt-86400000)} ›`;
+      const prev=day(at-86400000);
+      hourYesterday.textContent=prev===yesterday ? '昨天 ›' : `${monthDay(at-86400000)} ›`;
     }
+  }
+  function paintRail(rows){
+    const focus=rows[0];
+    if(!focus) return;
+    paintViewedDay(focus.window.startAt);
   }
   function paintDelay(){
     if(!delayEl) return;
@@ -996,8 +1043,15 @@ export function createInformationTreePage(host) {
   }
   function paintHourStrip(rows, index=readingIndex instanceof Map ? readingIndex : null) {
     const focused=focusedHourRows(rows);
-    ensureSelectedHour(focused.length ? focused : rows);
+    if(dateFilter && !focused.length){
+      const at=Date.parse(`${dateFilter}T12:00:00+08:00`);
+      paintViewedDay(at);
+      paintHourUnread(rows);
+      syncPeriodChrome();
+      return;
+    }
     const chosen=focused.length ? focused : rows;
+    ensureSelectedHour(chosen);
     const merged=mergeHourGaps(chosen.map(item=>item.window.startAt));
     const byStart=new Map(chosen.map(item=>[item.window.startAt,item]));
     const display=merged.map(item=>item.kind==='hour' ? {kind:'hour',edition:byStart.get(item.startAt)} : item).filter(item=>item.kind!=='hour' || item.edition);
@@ -1657,14 +1711,13 @@ export function createInformationTreePage(host) {
   }
   async function renderHourFeed(token,claim) {
     const rows=hourRows();
-    const focused=pendingClockHour!=null ? rowsForPendingClock(rows) : focusedHourRows(rows);
-    const pool=focused.length ? focused : rows;
+    const pool=hourSelectionRows(rows);
     if(pendingClockHour!=null) applyClockRequest(pool);
     else ensureSelectedHour(pool);
     writeHourHash(selectedHourStart);
     syncHourChrome();
     paintDelay(rows);
-    const edition=pool.find(item=>item.window.startAt===selectedHourStart) || rows.find(item=>item.window.startAt===selectedHourStart) || null;
+    const edition=pool.find(item=>item.window.startAt===selectedHourStart) || (dateFilter ? null : rows.find(item=>item.window.startAt===selectedHourStart)) || null;
     const hadHour=Boolean(edition);
     paintHourStrip(rows, readingIndex instanceof Map ? readingIndex : null);
     selected=edition;root.dataset.editionId=edition?.id || '';root.dataset.windowStart=String(edition?.window.startAt ?? '');root.dataset.briefMode='hourly';
@@ -1696,9 +1749,7 @@ export function createInformationTreePage(host) {
     const hourlyFeed=mode==='hourly' && !showMaterials;
     const dailyFeed=mode==='daily' && !showMaterials;
     if(hourlyFeed){
-      const allHours=hourRows();
-      const pool=pendingClockHour!=null ? rowsForPendingClock(allHours) : focusedHourRows(allHours);
-      const rows=pool.length ? pool : allHours;
+      const rows=hourSelectionRows(hourRows());
       if(pendingClockHour!=null) applyClockRequest(rows);
       else ensureSelectedHour(rows);
     }
@@ -1768,7 +1819,7 @@ export function createInformationTreePage(host) {
       if(JSON.stringify(editionRows(latest).map(choice))!==JSON.stringify(editionRows().map(choice))){nextManifest=latest;notice.replaceChildren(el('span',next && next.id!==selected?.id ? '所选时段有新版本。' : '刊期或处理进度已更新。'),button('接受更新',acceptUpdate));notice.hidden=false;}
     })().catch(()=>{}).finally(()=>{checking=null;});return checking;
   }
-  async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();invalidateInformationIndex();manifest=nextManifest;nextManifest=null;notice.hidden=true;periods();await render();}
+  async function acceptUpdate(){if(!nextManifest)return;editorialCache.clear();invalidateInformationIndex();manifest=retainViewedDayHours(manifest, nextManifest);nextManifest=null;notice.hidden=true;periods();await render();}
   // Pausing a retained page must not invalidate the ref handlers still mounted in it.
   function haltDigest(){digestStop();digestStop=()=>{};}
   function stop(){clearInterval(timer);timer=0;checking=null;clearHourSlow();}
@@ -1843,10 +1894,9 @@ export function createInformationTreePage(host) {
     hourEarlier=button('更早 ›',()=>{hourRevealEarlier=true;hourStripKey='';paintHourStrip(hourRows(), readingIndex instanceof Map ? readingIndex : null);});
     hourEarlier.className='tree-hour-earlier';
     hourYesterday=button('昨天 ›',()=>{
-      const focus=selectedHourStart || Date.now();
-      const prev=day(focus-86400000);
-      const hour=selectedHourStart ? hourClock(selectedHourStart) : null;
-      host.navigate?.(hour==null ? `report/${prev}` : `report/${prev}?hour=${String(hour).padStart(2,'0')}`);
+      const prev=shiftDateKey(viewedDateKey(), -1);
+      const hour=viewedClockHour();
+      host.navigate?.(`report/${prev}?hour=${String(hour).padStart(2,'0')}`);
     });
     hourYesterday.className='tree-hour-yesterday';
     hourToday=button('今天 ›',()=>openTodayLatest());
